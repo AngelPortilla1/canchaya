@@ -1,0 +1,69 @@
+id,epic,type,role,points,title,acceptance
+CY-001,E0,task,negocio,1,Preparar guion de entrevista con el dueño,Guion con las 5 preguntas pendientes y la propuesta de piloto
+CY-002,E0,task,negocio,2,Reunión con el dueño,"Se obtienen: reservas perdidas estimadas, no-shows, número de WhatsApp, acuerdo de piloto"
+CY-003,E0,task,negocio,2,Observar al empleado una noche de operación,Flujo real y puntos de dolor documentados
+CY-004,E0,spike,backend,3,"Verificar WhatsApp Business: coexistencia app+API, costos actuales y verificación de Meta",Conclusión escrita en ADR
+CY-005,E0,task,negocio,1,Definir política del piloto,"Documento de una página: duración, métricas, costo posterior, plan de reversa"
+CY-010,E1,task,devops,2,"Repositorio base: README, LICENSE, CODEOWNERS, plantillas",Plantillas de issue y PR operativas
+CY-011,E1,task,devops,1,Protección de ramas y tablero de GitHub Projects,main y develop protegidas; tablero con columnas definidas
+CY-012,E1,task,frontend,2,"Inicializar Next.js (TypeScript), ESLint, Prettier y estructura de carpetas",npm run lint/build/test funcionan; estructura apps/web y packages/core
+CY-013,E1,task,devops,2,Proyectos Supabase staging y production con variables de entorno,Ambos proyectos creados; .env.example documentado
+CY-014,E1,task,devops,3,"Pipeline de CI: lint, tests y build en cada PR",El PR falla si algo falla
+CY-015,E1,task,devops,3,"Despliegue automático: develop a staging, main a producción",Push a develop despliega a staging
+CY-016,E1,story,backend,5,Esquema inicial multi-recinto,"Tablas tenants, courts, sports, pricing, customers, bookings, payments, users con migraciones versionadas"
+CY-017,E1,story,backend,3,Restricción de exclusión (tstzrange + GiST) contra superposición por cancha,Test que intenta forzar doble reserva y falla
+CY-018,E1,story,backend,5,Row Level Security por tenant_id,Test: usuario del recinto A no ve datos del recinto B
+CY-019,E1,task,backend,3,Autenticación y roles (dueño y empleado),Login funcional con permisos por rol
+CY-020,E1,task,backend,2,"ADR-001 stack, ADR-002 multi-tenant, ADR-003 zonas horarias",Tres ADR en docs/adr
+CY-021,E1,task,backend,1,Datos semilla: recinto de prueba con 4 canchas y precios de 60000,seed.sql carga el recinto de prueba
+CY-030,E2,story,backend,5,Servicio de disponibilidad por deporte y fecha,"Devuelve horas libres según horario y reservas; pruebas de casos borde (medianoche, HOLD expirados)"
+CY-031,E2,story,backend,3,Crear reserva con estado HOLD y vencimiento a 15 min,La reserva bloquea la hora y guarda su vencimiento
+CY-032,E2,story,backend,3,Job que expira HOLD vencidos y libera la hora,Cron/pg_cron libera horas sin anticipo
+CY-033,E2,story,backend,3,Máquina de estados de reserva,"HOLD, CONFIRMED, COMPLETED, NO_SHOW, CANCELLED, RESCHEDULED; transiciones inválidas rechazadas"
+CY-034,E2,story,backend,5,Reprogramación con regla configurable que conserva el anticipo,Respeta horas mínimas de antelación
+CY-035,E2,story,ux,3,Wireframes del panel,"Calendario diario, detalle y pendientes revisados con el empleado"
+CY-036,E2,story,frontend,8,Calendario de 4 canchas por día (celular y escritorio),Muestra estados por cancha y hora
+CY-037,E2,story,frontend,5,"Crear, mover y cancelar reservas manualmente desde el panel",Operaciones con validación de disponibilidad
+CY-038,E2,story,frontend,5,Cola de anticipos por validar con comprobante,Aprobar o rechazar con un toque
+CY-039,E2,story,frontend,5,"Registro del saldo en recinto (efectivo, transferencia, mixto) y marcar jugada",Pago mixto suma el total correcto
+CY-040,E2,story,frontend,5,Configuración del recinto,"Horarios, canchas, precios, % anticipo y política de reprogramación editables"
+CY-041,E2,task,frontend,2,Panel como PWA instalable,Instalable en celular
+CY-042,E2,story,qa,3,Prueba de concurrencia: 50 intentos simultáneos sobre la misma hora,Solo uno gana
+CY-050,E3,story,ux,5,Diseñar el flujo conversacional completo del bot,"Reservar, consultar, reprogramar, cancelar y hablar con humano, en español colombiano natural"
+CY-051,E3,task,backend,3,"Registrar app en Meta, número de pruebas y webhook verificado",Webhook verificado por Meta
+CY-052,E3,story,backend,5,"Recibir mensajes por webhook con firma, idempotencia y registro",Un mensaje repetido no se procesa dos veces
+CY-053,E3,story,backend,3,"Enviar texto, botones y listas interactivas",Mensajes interactivos entregados
+CY-054,E3,story,backend,8,Motor de conversación con estado por cliente y timeouts,Sesión persistente y expiración controlada
+CY-055,E3,story,backend,8,"Flujo reservar: deporte, fecha, hora, resumen, HOLD y datos de pago",Reserva completa por WhatsApp hasta el HOLD
+CY-056,E3,story,backend,5,Recepción del comprobante (imagen) y aviso al empleado,Comprobante visible en el panel
+CY-057,E3,story,backend,3,Notificar confirmación o rechazo del anticipo,Cliente recibe el resultado
+CY-058,E3,story,backend,5,"Flujos de consulta, reprogramación y cancelación",Cada flujo probado
+CY-059,E3,story,backend,5,Transferencia a humano,"Marca la conversación, alerta al empleado y silencia el bot en ese chat"
+CY-060,E3,story,backend,2,Aviso de consentimiento y política de datos en el primer mensaje,Mensaje inicial cumple Ley 1581
+CY-061,E3,story,backend,3,"Plantillas de Meta aprobadas (confirmación, recordatorio)",Plantillas aprobadas por Meta
+CY-062,E3,task,devops,3,"Alertas: webhook caído, errores, token por vencer",Alertas recibidas en pruebas
+CY-063,E3,story,qa,5,Pruebas de conversación con 10 guiones,"Camino feliz, cambios de idea, mensajes raros, audios, spam"
+CY-064,E3,task,negocio,2,Manual del empleado y capacitación de 30 minutos,Manual de una página entregado
+CY-065,E3,task,devops,3,Corte a producción y plan de contingencia,Volver al modo manual en 5 minutos
+CY-070,E4,task,negocio,3,Definir y medir indicadores del piloto,"Mensajes fuera de horario atendidos, reservas por bot, conversión, no-shows, tiempo ahorrado"
+CY-071,E4,task,negocio,1,Revisión semanal con dueño y empleado,Lista de ajustes por semana
+CY-072,E4,bug,backend,3,Bandeja de bugs del piloto con SLA,Críticos resueltos en 24 horas
+CY-073,E4,task,negocio,3,Informe final del piloto y propuesta de mensualidad,Informe con cifras reales
+CY-080,E5,spike,backend,3,"Comparar pasarelas (Wompi, Bold, Mercado Pago, ePayco) y Bre-B","ADR con comisiones, liquidación y API vigentes"
+CY-081,E5,story,backend,8,Link de pago del anticipo con confirmación automática,Webhook de la pasarela confirma la reserva
+CY-082,E5,story,backend,5,Conciliación de pagos contra reservas,Alertas de pagos huérfanos
+CY-083,E5,story,backend,5,Recordatorios 24 h y 2 h antes con confirmar o reprogramar,Se envían con plantilla aprobada
+CY-084,E5,story,backend,8,Reservas fijas semanales,Genera reservas recurrentes sin choques
+CY-085,E5,story,backend,5,Lista de espera,Al liberarse una hora se avisa al primero
+CY-086,E5,story,backend,3,Marca de no-show y estadística por cliente,Historial visible en el panel
+CY-090,E6,story,frontend,5,Cierre de caja diario por método de pago,Muestra diferencia contra lo esperado
+CY-091,E6,story,backend,8,Catálogo de confitería e inventario básico,Alerta de bajo stock
+CY-092,E6,story,backend,5,Alquiler de raquetas y balones asociado a la reserva,Se suma al saldo
+CY-093,E6,story,frontend,8,Reportes del dueño,"Ocupación por cancha y hora, ingresos, clientes frecuentes"
+CY-094,E6,story,frontend,2,Exportación a CSV,Descarga de reportes
+CY-095,E6,story,backend,13,Torneos relámpago (dividir antes de planificar),Solo si el dueño lo pide
+CY-100,E7,story,frontend,8,Onboarding de nuevo recinto con asistente,"Canchas, precios, horarios y número de WhatsApp"
+CY-101,E7,story,backend,8,Facturación de mensualidad y suspensión por impago,Cobro recurrente operativo
+CY-102,E7,task,negocio,3,"Términos, privacidad y contrato de servicio",Revisados por un abogado
+CY-103,E7,task,negocio,5,"Página de aterrizaje, demo y caso de éxito",Publicada
+CY-104,E7,task,negocio,3,"Lista de 20 recintos objetivo (Pamplona, Cúcuta, Bucaramanga y alrededores)",Lista con plan de contacto
