@@ -1,29 +1,52 @@
 name: CI
+
 on:
   pull_request:
     branches: [develop, main]
   push:
-    branches: [develop]
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ci:
+    name: ci
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 22
+        uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Antes de CY-012 no existe package.json: el job se salta los pasos de Node.
-      - name: Detectar proyecto
-        id: detect
-        run: |
-          if [ -f package.json ]; then echo "has_node=true" >> "$GITHUB_OUTPUT"; else echo "has_node=false" >> "$GITHUB_OUTPUT"; fi
-      - if: steps.detect.outputs.has_node == 'true'
+          cache: "npm"
+
+      - name: Instalar dependencias
         run: npm ci
-      - if: steps.detect.outputs.has_node == 'true'
-        run: npm run lint --if-present
-      - if: steps.detect.outputs.has_node == 'true'
-        run: npm run typecheck --if-present
-      - if: steps.detect.outputs.has_node == 'true'
-        run: npm test --if-present
-      - if: steps.detect.outputs.has_node == 'true'
-        run: npm run build --if-present
+
+      - name: Verificar formato (Prettier)
+        run: npm run format:check
+
+      - name: Ejecutar linter (ESLint)
+        run: npm run lint
+
+      - name: Verificar tipos (TypeScript)
+        run: npm run typecheck
+
+      - name: Ejecutar pruebas unitarias (Vitest)
+        run: npm test
+
+      - name: Compilar aplicación (Next.js build)
+        env:
+          NEXT_PUBLIC_APP_ENV: development
+          NEXT_PUBLIC_SUPABASE_URL: https://ci-placeholder.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-anon-key-placeholder
+        run: npm run build
+
