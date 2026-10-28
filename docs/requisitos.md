@@ -1,6 +1,7 @@
 # Requisitos
 
 ## Funcionales
+
 - RF-01 Mostrar disponibilidad por deporte, cancha, fecha y hora (bloques de 60 min).
 - RF-02 Crear reserva con HOLD de 15 min hasta recibir el anticipo.
 - RF-03 Expirar HOLD y liberar la hora automáticamente.
@@ -24,6 +25,7 @@
 - RF-21 Torneos relámpago.
 
 ## No funcionales
+
 - RNF-01 Disponibilidad 99% mensual en horario de operación.
 - RNF-02 Respuesta del bot < 3 s en el 95% de los casos.
 - RNF-03 RLS por recinto; cumplimiento de la Ley 1581 de 2012.

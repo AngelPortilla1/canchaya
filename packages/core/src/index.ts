@@ -7,12 +7,7 @@ export const DEFAULT_DEPOSIT_PERCENT = 20 as const;
 export type SportCode = "padel" | "futbol_5";
 
 export type BookingStatus =
-  | "HOLD"
-  | "CONFIRMED"
-  | "COMPLETED"
-  | "NO_SHOW"
-  | "CANCELLED"
-  | "RESCHEDULED";
+  "HOLD" | "CONFIRMED" | "COMPLETED" | "NO_SHOW" | "CANCELLED" | "RESCHEDULED";
 
 /**
  * Calculates the deposit amount in integer Colombian Pesos (COP).
@@ -30,4 +25,3 @@ export function calculateDepositCop(
   }
   return Math.round((priceCop * depositPercent) / 100);
 }
-

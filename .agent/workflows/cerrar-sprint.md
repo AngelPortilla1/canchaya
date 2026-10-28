@@ -1,6 +1,7 @@
 ---
 description: Cierre de sprint: resumen, release notes y retrospectiva
 ---
+
 1. Lista los issues cerrados del sprint (`gh issue list --state closed --search "closed:>=YYYY-MM-DD"`; pídeme la fecha de inicio).
 2. Calcula puntos completados contra los planificados y la velocidad.
 3. Redacta release notes en lenguaje de negocio (qué puede hacer ahora el empleado o el dueño), no técnico.

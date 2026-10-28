@@ -4,8 +4,12 @@
 - Fecha: AAAA-MM-DD
 
 ## Contexto
+
 ## Opciones consideradas
+
 1. Opción A: pros / contras
 2. Opción B: pros / contras
+
 ## Decisión
+
 ## Consecuencias

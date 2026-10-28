@@ -19,8 +19,8 @@ export default function HomePage() {
       <header className="space-y-2">
         <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">CanchaYa</h1>
         <p className="text-base text-slate-300">
-          Nunca más pierdes una reserva por no contestar. Panel de operación y reservas por
-          WhatsApp para canchas de pádel y fútbol 5.
+          Nunca más pierdes una reserva por no contestar. Panel de operación y reservas por WhatsApp
+          para canchas de pádel y fútbol 5.
         </p>
       </header>
 
@@ -47,4 +47,3 @@ export default function HomePage() {
     </main>
   );
 }
-
