@@ -28,4 +28,3 @@ describe("@canchaya/core base domain rules", () => {
     expect(() => calculateDepositCop(60_000, 120)).toThrow(/between 0 and 100/);
   });
 });
-

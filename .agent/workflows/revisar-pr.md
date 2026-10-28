@@ -1,6 +1,7 @@
 ---
 description: Autorrevisión crítica de la rama actual antes de abrir o fusionar un PR
 ---
+
 1. Ejecuta `git diff develop...HEAD` y revisa el cambio completo.
 2. Verifica contra el issue: ¿cada criterio de aceptación está cubierto y probado?
 3. Revisa seguridad: secretos, RLS con `tenant_id`, datos personales en logs, validación de firma en webhooks.
