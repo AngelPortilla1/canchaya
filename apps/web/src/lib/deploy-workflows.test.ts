@@ -52,4 +52,3 @@ describe("CI/CD deployment workflows (CY-015)", () => {
     expect(parsed.git?.deploymentEnabled).toBe(false);
   });
 });
-
