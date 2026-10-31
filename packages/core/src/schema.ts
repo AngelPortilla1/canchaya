@@ -175,4 +175,3 @@ export function validatePaymentBreakdownCop(params: {
   }
   return cashAmountCop > 0 && transferAmountCop > 0;
 }
-
