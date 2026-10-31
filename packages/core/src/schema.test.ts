@@ -1,7 +1,17 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { INITIAL_SCHEMA_TABLES, TENANT_SCOPED_TABLES, validatePaymentBreakdownCop } from "./schema";
+import {
+  assertNoBookingOverlap,
+  BOOKING_EXCLUSION_CONSTRAINT_NAME,
+  BookingOverlapError,
+  type BookingSlotCandidate,
+  doTimeRangesOverlap,
+  INITIAL_SCHEMA_TABLES,
+  POSTGRES_EXCLUSION_VIOLATION_CODE,
+  TENANT_SCOPED_TABLES,
+  validatePaymentBreakdownCop,
+} from "./schema";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const migrationsDir = path.join(repoRoot, "supabase/migrations");
@@ -118,6 +128,144 @@ describe("Initial multi-tenant database schema migration (CY-016)", () => {
         cashAmountCop: 20_000,
         transferAmountCop: 20_000,
       }),
+    ).toBe(false);
+  });
+});
+
+describe("Booking exclusion constraint (tstzrange + GiST) per court (CY-017)", () => {
+  const exclusionMigrationFile = "20261031120000_booking_exclusion_constraint.sql";
+  const tenantId = "11111111-1111-1111-1111-111111111111";
+  const courtPadel1 = "22222222-2222-2222-2222-222222222221";
+  const courtPadel2 = "22222222-2222-2222-2222-222222222222";
+
+  it("defines a versioned migration enabling btree_gist and GiST tstzrange exclusion per court", () => {
+    const migrationPath = path.join(migrationsDir, exclusionMigrationFile);
+    expect(existsSync(migrationPath)).toBe(true);
+
+    const sql = readFileSync(migrationPath, "utf8");
+    expect(sql).toMatch(/CREATE EXTENSION IF NOT EXISTS btree_gist;/i);
+    expect(sql).toContain(BOOKING_EXCLUSION_CONSTRAINT_NAME);
+    expect(sql).toMatch(/EXCLUDE USING gist\s*\(/i);
+    expect(sql).toMatch(/tenant_id\s+WITH\s*=/i);
+    expect(sql).toMatch(/court_id\s+WITH\s*=/i);
+    expect(sql).toMatch(/tstzrange\(starts_at,\s*ends_at,\s*'\[\)'\)\s+WITH\s*&&/i);
+    expect(sql).toMatch(
+      /WHERE\s*\(\s*status\s+NOT IN\s*\(\s*'CANCELLED',\s*'RESCHEDULED'\s*\)\s*\)/i,
+    );
+  });
+
+  it("fails with BookingOverlapError (23P01) when forcing an exact or partial double booking on the same court", () => {
+    const existingHold: BookingSlotCandidate = {
+      id: "booking-1",
+      tenant_id: tenantId,
+      court_id: courtPadel1,
+      status: "HOLD",
+      starts_at: "2026-11-01T23:00:00.000Z",
+      ends_at: "2026-11-02T00:00:00.000Z",
+    };
+
+    // 1. Exact same 60-min slot on the same court -> must fail
+    expect(() =>
+      assertNoBookingOverlap([existingHold], {
+        id: "booking-2",
+        tenant_id: tenantId,
+        court_id: courtPadel1,
+        status: "CONFIRMED",
+        starts_at: "2026-11-01T23:00:00.000Z",
+        ends_at: "2026-11-02T00:00:00.000Z",
+      }),
+    ).toThrowError(BookingOverlapError);
+
+    try {
+      assertNoBookingOverlap([existingHold], {
+        id: "booking-2",
+        tenant_id: tenantId,
+        court_id: courtPadel1,
+        status: "HOLD",
+        starts_at: "2026-11-01T23:30:00.000Z",
+        ends_at: "2026-11-02T00:30:00.000Z",
+      });
+      expect.unreachable("Expected double booking attempt to throw BookingOverlapError");
+    } catch (error) {
+      expect(error).toBeInstanceOf(BookingOverlapError);
+      const overlapError = error as BookingOverlapError;
+      expect(overlapError.code).toBe(POSTGRES_EXCLUSION_VIOLATION_CODE);
+      expect(overlapError.constraint).toBe(BOOKING_EXCLUSION_CONSTRAINT_NAME);
+      expect(overlapError.conflictingBookingId).toBe("booking-1");
+    }
+  });
+
+  it("allows back-to-back bookings '[)', bookings on another court, or re-booking a CANCELLED/RESCHEDULED slot", () => {
+    const existingBookings: BookingSlotCandidate[] = [
+      {
+        id: "booking-active",
+        tenant_id: tenantId,
+        court_id: courtPadel1,
+        status: "CONFIRMED",
+        starts_at: "2026-11-01T23:00:00.000Z",
+        ends_at: "2026-11-02T00:00:00.000Z",
+      },
+      {
+        id: "booking-cancelled",
+        tenant_id: tenantId,
+        court_id: courtPadel1,
+        status: "CANCELLED",
+        starts_at: "2026-11-02T00:00:00.000Z",
+        ends_at: "2026-11-02T01:00:00.000Z",
+      },
+      {
+        id: "booking-rescheduled",
+        tenant_id: tenantId,
+        court_id: courtPadel1,
+        status: "RESCHEDULED",
+        starts_at: "2026-11-02T01:00:00.000Z",
+        ends_at: "2026-11-02T02:00:00.000Z",
+      },
+    ];
+
+    // Contiguous slot [00:00, 01:00) right after [23:00, 00:00) and replacing a CANCELLED booking -> allowed
+    expect(() =>
+      assertNoBookingOverlap(existingBookings, {
+        id: "booking-contiguous",
+        tenant_id: tenantId,
+        court_id: courtPadel1,
+        status: "HOLD",
+        starts_at: "2026-11-02T00:00:00.000Z",
+        ends_at: "2026-11-02T01:00:00.000Z",
+      }),
+    ).not.toThrow();
+
+    // Replacing a RESCHEDULED slot on the same court -> allowed
+    expect(() =>
+      assertNoBookingOverlap(existingBookings, {
+        id: "booking-replace-rescheduled",
+        tenant_id: tenantId,
+        court_id: courtPadel1,
+        status: "CONFIRMED",
+        starts_at: "2026-11-02T01:00:00.000Z",
+        ends_at: "2026-11-02T02:00:00.000Z",
+      }),
+    ).not.toThrow();
+
+    // Same time range on a different court (courtPadel2) -> allowed
+    expect(() =>
+      assertNoBookingOverlap(existingBookings, {
+        id: "booking-other-court",
+        tenant_id: tenantId,
+        court_id: courtPadel2,
+        status: "CONFIRMED",
+        starts_at: "2026-11-01T23:00:00.000Z",
+        ends_at: "2026-11-02T00:00:00.000Z",
+      }),
+    ).not.toThrow();
+
+    expect(
+      doTimeRangesOverlap(
+        "2026-11-01T23:00:00.000Z",
+        "2026-11-02T00:00:00.000Z",
+        "2026-11-02T00:00:00.000Z",
+        "2026-11-02T01:00:00.000Z",
+      ),
     ).toBe(false);
   });
 });

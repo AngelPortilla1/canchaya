@@ -175,3 +175,124 @@ export function validatePaymentBreakdownCop(params: {
   }
   return cashAmountCop > 0 && transferAmountCop > 0;
 }
+
+export const BOOKING_EXCLUSION_CONSTRAINT_NAME =
+  "bookings_no_overlapping_active_slots_excl" as const;
+
+export const POSTGRES_EXCLUSION_VIOLATION_CODE = "23P01" as const;
+
+export const BOOKING_BLOCKING_STATUSES = [
+  "HOLD",
+  "CONFIRMED",
+  "COMPLETED",
+  "NO_SHOW",
+] as const satisfies readonly BookingStatus[];
+
+export const BOOKING_NON_BLOCKING_STATUSES = [
+  "CANCELLED",
+  "RESCHEDULED",
+] as const satisfies readonly BookingStatus[];
+
+export interface BookingSlotCandidate {
+  id?: string;
+  tenant_id: string;
+  court_id: string;
+  status: BookingStatus;
+  starts_at: string;
+  ends_at: string;
+}
+
+export class BookingOverlapError extends Error {
+  readonly code = POSTGRES_EXCLUSION_VIOLATION_CODE;
+  readonly constraint = BOOKING_EXCLUSION_CONSTRAINT_NAME;
+  readonly conflictingBookingId: string | undefined;
+
+  constructor(message: string, conflictingBookingId?: string) {
+    super(message);
+    this.name = "BookingOverlapError";
+    this.conflictingBookingId = conflictingBookingId;
+  }
+}
+
+export function isBlockingBookingStatus(status: BookingStatus): boolean {
+  return (BOOKING_BLOCKING_STATUSES as readonly BookingStatus[]).includes(status);
+}
+
+/**
+ * Evaluates half-open UTC range overlap `[starts_at, ends_at)`, matching PostgreSQL
+ * `tstzrange(starts_at, ends_at, '[)') && tstzrange(...)`.
+ */
+export function doTimeRangesOverlap(
+  startA: string,
+  endA: string,
+  startB: string,
+  endB: string,
+): boolean {
+  const startAMs = Date.parse(startA);
+  const endAMs = Date.parse(endA);
+  const startBMs = Date.parse(startB);
+  const endBMs = Date.parse(endB);
+
+  if (
+    Number.isNaN(startAMs) ||
+    Number.isNaN(endAMs) ||
+    Number.isNaN(startBMs) ||
+    Number.isNaN(endBMs)
+  ) {
+    throw new Error("Invalid ISO-8601 UTC timestamp in booking time range");
+  }
+  if (endAMs <= startAMs || endBMs <= startBMs) {
+    throw new Error("Booking ends_at must be strictly greater than starts_at");
+  }
+
+  return startAMs < endBMs && startBMs < endAMs;
+}
+
+/**
+ * Enforces the same invariant as `bookings_no_overlapping_active_slots_excl` (`23P01`):
+ * two active bookings on the same tenant and court cannot have overlapping `[starts_at, ends_at)` ranges.
+ */
+export function assertNoBookingOverlap(
+  existingBookings: readonly BookingSlotCandidate[],
+  candidate: BookingSlotCandidate,
+): void {
+  const candidateStartMs = Date.parse(candidate.starts_at);
+  const candidateEndMs = Date.parse(candidate.ends_at);
+
+  if (Number.isNaN(candidateStartMs) || Number.isNaN(candidateEndMs)) {
+    throw new Error("Invalid ISO-8601 UTC timestamp in booking time range");
+  }
+  if (candidateEndMs <= candidateStartMs) {
+    throw new Error("Booking ends_at must be strictly greater than starts_at");
+  }
+
+  if (!isBlockingBookingStatus(candidate.status)) {
+    return;
+  }
+
+  for (const existing of existingBookings) {
+    if (candidate.id && existing.id && candidate.id === existing.id) {
+      continue;
+    }
+    if (existing.tenant_id !== candidate.tenant_id || existing.court_id !== candidate.court_id) {
+      continue;
+    }
+    if (!isBlockingBookingStatus(existing.status)) {
+      continue;
+    }
+
+    if (
+      doTimeRangesOverlap(
+        existing.starts_at,
+        existing.ends_at,
+        candidate.starts_at,
+        candidate.ends_at,
+      )
+    ) {
+      throw new BookingOverlapError(
+        `conflicting key value violates exclusion constraint "${BOOKING_EXCLUSION_CONSTRAINT_NAME}"`,
+        existing.id,
+      );
+    }
+  }
+}
