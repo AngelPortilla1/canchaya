@@ -25,3 +25,5 @@ export function calculateDepositCop(
   }
   return Math.round((priceCop * depositPercent) / 100);
 }
+
+export * from "./schema";
