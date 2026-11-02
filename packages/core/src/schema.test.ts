@@ -3,12 +3,19 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   assertNoBookingOverlap,
+  assertTenantAccess,
+  type AuthenticatedTenantUserContext,
   BOOKING_EXCLUSION_CONSTRAINT_NAME,
   BookingOverlapError,
   type BookingSlotCandidate,
+  canAccessTenantRecord,
   doTimeRangesOverlap,
+  filterTenantRecordsForUser,
   INITIAL_SCHEMA_TABLES,
   POSTGRES_EXCLUSION_VIOLATION_CODE,
+  POSTGRES_RLS_VIOLATION_CODE,
+  RlsAccessDeniedError,
+  TENANT_RLS_HELPER_FUNCTIONS,
   TENANT_SCOPED_TABLES,
   validatePaymentBreakdownCop,
 } from "./schema";
@@ -267,5 +274,192 @@ describe("Booking exclusion constraint (tstzrange + GiST) per court (CY-017)", (
         "2026-11-02T01:00:00.000Z",
       ),
     ).toBe(false);
+  });
+});
+
+describe("Row Level Security per tenant_id (CY-018)", () => {
+  const rlsMigrationFile = "20261101213000_tenant_rls_policies.sql";
+  const tenantAId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const tenantBId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+  const userOwnerTenantA: AuthenticatedTenantUserContext = {
+    userId: "user-owner-a",
+    tenantId: tenantAId,
+    role: "owner",
+    isActive: true,
+  };
+
+  const userStaffTenantA: AuthenticatedTenantUserContext = {
+    userId: "user-staff-a",
+    tenantId: tenantAId,
+    role: "staff",
+    isActive: true,
+  };
+
+  const userOwnerTenantB: AuthenticatedTenantUserContext = {
+    userId: "user-owner-b",
+    tenantId: tenantBId,
+    role: "owner",
+    isActive: true,
+  };
+
+  const inactiveUserTenantA: AuthenticatedTenantUserContext = {
+    userId: "user-inactive-a",
+    tenantId: tenantAId,
+    role: "owner",
+    isActive: false,
+  };
+
+  it("defines a versioned migration forcing RLS, SECURITY DEFINER helpers and policies on all 8 tables", () => {
+    const migrationPath = path.join(migrationsDir, rlsMigrationFile);
+    expect(existsSync(migrationPath)).toBe(true);
+
+    const sql = readFileSync(migrationPath, "utf8");
+
+    for (const fnName of TENANT_RLS_HELPER_FUNCTIONS) {
+      expect(sql).toMatch(new RegExp(`CREATE OR REPLACE FUNCTION public\\.${fnName}\\(\\)`, "i"));
+      expect(sql).toMatch(
+        new RegExp(`GRANT EXECUTE ON FUNCTION public\\.${fnName}\\(\\) TO authenticated;`, "i"),
+      );
+    }
+    expect(sql).toMatch(/SECURITY DEFINER\s+SET search_path = public/i);
+
+    for (const table of INITIAL_SCHEMA_TABLES) {
+      expect(sql).toMatch(
+        new RegExp(`ALTER TABLE public\\.${table}\\s+FORCE ROW LEVEL SECURITY;`, "i"),
+      );
+      expect(sql).toMatch(new RegExp(`ON public\\.${table}\\s+FOR SELECT`, "i"));
+    }
+
+    for (const table of TENANT_SCOPED_TABLES) {
+      expect(sql).toMatch(
+        new RegExp(
+          `ON public\\.${table}[\\s\\S]*?USING \\([^;]*tenant_id = public\\.current_user_tenant_id\\(\\)`,
+          "i",
+        ),
+      );
+      expect(sql).toMatch(
+        new RegExp(
+          `ON public\\.${table}[\\s\\S]*?WITH CHECK \\([^;]*tenant_id = public\\.current_user_tenant_id\\(\\)`,
+          "i",
+        ),
+      );
+    }
+  });
+
+  it("ensures a user from Tenant A cannot see any data belonging to Tenant B across all 8 tables", () => {
+    const tenantsRows = [
+      { id: tenantAId, slug: "recinto-pamplona-a" },
+      { id: tenantBId, slug: "recinto-cucuta-b" },
+    ];
+
+    const visibleTenantsForA = filterTenantRecordsForUser(userStaffTenantA, "tenants", tenantsRows);
+    expect(visibleTenantsForA).toEqual([{ id: tenantAId, slug: "recinto-pamplona-a" }]);
+
+    const visibleTenantsForB = filterTenantRecordsForUser(userOwnerTenantB, "tenants", tenantsRows);
+    expect(visibleTenantsForB).toEqual([{ id: tenantBId, slug: "recinto-cucuta-b" }]);
+
+    for (const table of TENANT_SCOPED_TABLES) {
+      const mixedRows = [
+        { id: `${table}-a-1`, tenant_id: tenantAId },
+        { id: `${table}-b-1`, tenant_id: tenantBId },
+        { id: `${table}-a-2`, tenant_id: tenantAId },
+      ];
+
+      const visibleToOwnerA = filterTenantRecordsForUser(userOwnerTenantA, table, mixedRows);
+      expect(visibleToOwnerA).toHaveLength(2);
+      expect(visibleToOwnerA.every((row) => row.tenant_id === tenantAId)).toBe(true);
+      expect(visibleToOwnerA.some((row) => row.tenant_id === tenantBId)).toBe(false);
+
+      const visibleToStaffA = filterTenantRecordsForUser(userStaffTenantA, table, mixedRows);
+      expect(visibleToStaffA).toHaveLength(2);
+      expect(visibleToStaffA.every((row) => row.tenant_id === tenantAId)).toBe(true);
+
+      const visibleToOwnerB = filterTenantRecordsForUser(userOwnerTenantB, table, mixedRows);
+      expect(visibleToOwnerB).toEqual([{ id: `${table}-b-1`, tenant_id: tenantBId }]);
+
+      expect(filterTenantRecordsForUser(inactiveUserTenantA, table, mixedRows)).toEqual([]);
+      expect(filterTenantRecordsForUser(null, table, mixedRows)).toEqual([]);
+    }
+  });
+
+  it("rejects cross-tenant mutations (INSERT, UPDATE, DELETE) and tenant_id reassignment with 42501", () => {
+    // Owner of Tenant A trying to insert a booking into Tenant B -> rejected
+    expect(() =>
+      assertTenantAccess({
+        user: userOwnerTenantA,
+        table: "bookings",
+        operation: "INSERT",
+        row: { tenant_id: tenantBId },
+      }),
+    ).toThrowError(RlsAccessDeniedError);
+
+    // Staff of Tenant A trying to update a payment in Tenant B -> rejected with 42501
+    try {
+      assertTenantAccess({
+        user: userStaffTenantA,
+        table: "payments",
+        operation: "UPDATE",
+        row: { tenant_id: tenantBId },
+      });
+      expect.unreachable("Expected cross-tenant UPDATE to throw RlsAccessDeniedError");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RlsAccessDeniedError);
+      const rlsError = error as RlsAccessDeniedError;
+      expect(rlsError.code).toBe(POSTGRES_RLS_VIOLATION_CODE);
+      expect(rlsError.table).toBe("payments");
+      expect(rlsError.operation).toBe("UPDATE");
+    }
+
+    // Owner of Tenant A trying to reassign a Tenant A customer to Tenant B on UPDATE -> rejected by WITH CHECK
+    expect(() =>
+      assertTenantAccess({
+        user: userOwnerTenantA,
+        table: "customers",
+        operation: "UPDATE",
+        row: { tenant_id: tenantAId },
+        updatedRow: { tenant_id: tenantBId },
+      }),
+    ).toThrowError(RlsAccessDeniedError);
+
+    // Staff of Tenant A can insert/update operational records (customers, bookings, payments) in Tenant A
+    for (const table of ["customers", "bookings", "payments"] as const) {
+      expect(() =>
+        assertTenantAccess({
+          user: userStaffTenantA,
+          table,
+          operation: "INSERT",
+          row: { tenant_id: tenantAId },
+        }),
+      ).not.toThrow();
+
+      expect(() =>
+        assertTenantAccess({
+          user: userStaffTenantA,
+          table,
+          operation: "UPDATE",
+          row: { tenant_id: tenantAId },
+          updatedRow: { tenant_id: tenantAId },
+        }),
+      ).not.toThrow();
+    }
+
+    // Staff of Tenant A cannot mutate owner-managed configuration tables (courts, pricing, sports, users, tenants)
+    expect(
+      canAccessTenantRecord({
+        user: userStaffTenantA,
+        table: "courts",
+        operation: "INSERT",
+        row: { tenant_id: tenantAId },
+      }),
+    ).toBe(false);
+    expect(
+      canAccessTenantRecord({
+        user: userOwnerTenantA,
+        table: "courts",
+        operation: "INSERT",
+        row: { tenant_id: tenantAId },
+      }),
+    ).toBe(true);
   });
 });

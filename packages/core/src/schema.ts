@@ -296,3 +296,153 @@ export function assertNoBookingOverlap(
     }
   }
 }
+
+export const POSTGRES_RLS_VIOLATION_CODE = "42501" as const;
+
+export const TENANT_RLS_HELPER_FUNCTIONS = ["current_user_tenant_id", "current_user_role"] as const;
+
+export type RlsOperation = "SELECT" | "INSERT" | "UPDATE" | "DELETE";
+
+export const OWNER_MANAGED_CONFIG_TABLES = [
+  "sports",
+  "courts",
+  "pricing",
+  "users",
+] as const satisfies readonly TenantScopedTableName[];
+
+export const OPERATIONAL_TENANT_TABLES = [
+  "customers",
+  "bookings",
+  "payments",
+] as const satisfies readonly TenantScopedTableName[];
+
+export interface AuthenticatedTenantUserContext {
+  userId: string;
+  tenantId: string;
+  role: UserRole;
+  isActive?: boolean;
+}
+
+export type TenantOwnedRow = { tenant_id: string } | { id: string; slug?: string };
+
+export class RlsAccessDeniedError extends Error {
+  readonly code = POSTGRES_RLS_VIOLATION_CODE;
+  readonly table: SchemaTableName;
+  readonly operation: RlsOperation;
+
+  constructor(table: SchemaTableName, operation: RlsOperation) {
+    super(`new row violates row-level security policy for table "${table}" (${operation})`);
+    this.name = "RlsAccessDeniedError";
+    this.table = table;
+    this.operation = operation;
+  }
+}
+
+function resolveRowTenantId(table: SchemaTableName, row: TenantOwnedRow): string {
+  if (table === "tenants") {
+    if ("id" in row && typeof row.id === "string") {
+      return row.id;
+    }
+    throw new Error('Table "tenants" row must include an "id" field for RLS evaluation');
+  }
+  if ("tenant_id" in row && typeof row.tenant_id === "string") {
+    return row.tenant_id;
+  }
+  throw new Error(`Table "${table}" row must include a "tenant_id" field for RLS evaluation`);
+}
+
+/**
+ * Evaluates the PostgreSQL Row Level Security (RLS) policy for a given table, operation,
+ * authenticated user context, and target row.
+ * Mirrors the policies in `20261101213000_tenant_rls_policies.sql`.
+ */
+export function canAccessTenantRecord(params: {
+  user: AuthenticatedTenantUserContext | null | undefined;
+  table: SchemaTableName;
+  operation: RlsOperation;
+  row: TenantOwnedRow;
+}): boolean {
+  const { user, table, operation, row } = params;
+
+  if (!user || !user.userId || !user.tenantId || user.isActive === false) {
+    return false;
+  }
+
+  const rowTenantId = resolveRowTenantId(table, row);
+  if (rowTenantId !== user.tenantId) {
+    return false;
+  }
+
+  if (table === "tenants") {
+    if (operation === "SELECT") {
+      return true;
+    }
+    if (operation === "UPDATE") {
+      return user.role === "owner";
+    }
+    return false;
+  }
+
+  if ((OWNER_MANAGED_CONFIG_TABLES as readonly string[]).includes(table)) {
+    if (operation === "SELECT") {
+      return true;
+    }
+    return user.role === "owner";
+  }
+
+  if ((OPERATIONAL_TENANT_TABLES as readonly string[]).includes(table)) {
+    return operation === "SELECT" || operation === "INSERT" || operation === "UPDATE";
+  }
+
+  return false;
+}
+
+/**
+ * Filters a collection of rows using the `SELECT` RLS policy (`USING`) for the given user.
+ * Rows belonging to other tenants are invisible (filtered out), matching PostgreSQL RLS behavior.
+ */
+export function filterTenantRecordsForUser<T extends TenantOwnedRow>(
+  user: AuthenticatedTenantUserContext | null | undefined,
+  table: SchemaTableName,
+  rows: readonly T[],
+): T[] {
+  return rows.filter((row) =>
+    canAccessTenantRecord({
+      user,
+      table,
+      operation: "SELECT",
+      row,
+    }),
+  );
+}
+
+/**
+ * Enforces `USING` / `WITH CHECK` RLS policies for mutations (`INSERT`, `UPDATE`, `DELETE`).
+ * Throws `RlsAccessDeniedError` (`42501`) when a user attempts to mutate another tenant's data
+ * or lacks role permissions, or when an `UPDATE` attempts to reassign `tenant_id`.
+ */
+export function assertTenantAccess(params: {
+  user: AuthenticatedTenantUserContext | null | undefined;
+  table: SchemaTableName;
+  operation: RlsOperation;
+  row: TenantOwnedRow;
+  updatedRow?: TenantOwnedRow;
+}): void {
+  const { user, table, operation, row, updatedRow } = params;
+
+  if (!canAccessTenantRecord({ user, table, operation, row })) {
+    throw new RlsAccessDeniedError(table, operation);
+  }
+
+  if (
+    updatedRow &&
+    !canAccessTenantRecord({
+      user,
+      table,
+      operation,
+      row: updatedRow,
+    })
+  ) {
+    throw new RlsAccessDeniedError(table, operation);
+  }
+}
