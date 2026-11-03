@@ -12,6 +12,11 @@ import {
   doTimeRangesOverlap,
   filterTenantRecordsForUser,
   INITIAL_SCHEMA_TABLES,
+  PILOT_SEED_COURTS,
+  PILOT_SEED_DEPOSIT_PERCENT,
+  PILOT_SEED_HOURLY_PRICE_COP,
+  PILOT_SEED_TENANT_ID,
+  PILOT_SEED_TENANT_SLUG,
   POSTGRES_EXCLUSION_VIOLATION_CODE,
   POSTGRES_RLS_VIOLATION_CODE,
   RlsAccessDeniedError,
@@ -461,5 +466,30 @@ describe("Row Level Security per tenant_id (CY-018)", () => {
         row: { tenant_id: tenantAId },
       }),
     ).toBe(true);
+  });
+});
+
+describe("Pilot seed data (CY-021)", () => {
+  const seedFilePath = path.join(repoRoot, "supabase/seed.sql");
+
+  it("provides supabase/seed.sql with pilot tenant, 2 sports, 4 courts, 60000 COP pricing, and test roles", () => {
+    expect(existsSync(seedFilePath)).toBe(true);
+    const seedSql = readFileSync(seedFilePath, "utf8");
+
+    expect(seedSql).toContain(PILOT_SEED_TENANT_ID);
+    expect(seedSql).toContain(PILOT_SEED_TENANT_SLUG);
+    expect(seedSql).toContain("America/Bogota");
+
+    expect(PILOT_SEED_COURTS).toHaveLength(4);
+    for (const court of PILOT_SEED_COURTS) {
+      expect(seedSql).toContain(court.id);
+      expect(seedSql).toContain(court.name);
+    }
+
+    expect(seedSql).toMatch(new RegExp(`\\b${PILOT_SEED_HOURLY_PRICE_COP}\\b`));
+    expect(seedSql).toMatch(new RegExp(`\\b${PILOT_SEED_DEPOSIT_PERCENT}\\b`));
+    expect(seedSql).toContain("dueno@canchaya.test");
+    expect(seedSql).toContain("empleado@canchaya.test");
+    expect(seedSql).toMatch(/ON CONFLICT[\s\S]*DO (UPDATE|NOTHING)/i);
   });
 });

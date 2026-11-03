@@ -446,3 +446,35 @@ export function assertTenantAccess(params: {
     throw new RlsAccessDeniedError(table, operation);
   }
 }
+
+export const PILOT_SEED_TENANT_ID = "11111111-1111-4111-8111-111111111111" as const;
+export const PILOT_SEED_TENANT_SLUG = "pamplona-piloto" as const;
+export const PILOT_SEED_HOURLY_PRICE_COP = 60_000 as const;
+export const PILOT_SEED_DEPOSIT_PERCENT = 20 as const;
+
+export const PILOT_SEED_COURTS = [
+  {
+    id: "33333333-3333-4333-8333-333333333301",
+    name: "Cancha Pádel 1",
+    sportCode: "padel",
+    displayOrder: 1,
+  },
+  {
+    id: "33333333-3333-4333-8333-333333333302",
+    name: "Cancha Pádel 2",
+    sportCode: "padel",
+    displayOrder: 2,
+  },
+  {
+    id: "33333333-3333-4333-8333-333333333303",
+    name: "Cancha Fútbol 5 - 1",
+    sportCode: "futbol_5",
+    displayOrder: 3,
+  },
+  {
+    id: "33333333-3333-4333-8333-333333333304",
+    name: "Cancha Fútbol 5 - 2",
+    sportCode: "futbol_5",
+    displayOrder: 4,
+  },
+] as const;
