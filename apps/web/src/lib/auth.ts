@@ -264,4 +264,3 @@ export function buildAuthCookieOptions(params: {
     maxAge: params.maxAgeSeconds,
   };
 }
-

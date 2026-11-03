@@ -58,10 +58,7 @@ export async function POST(request: Request) {
     return response;
   } catch (error) {
     if (error instanceof InvalidCredentialsError) {
-      return NextResponse.json(
-        { error: "Correo o contraseña incorrectos." },
-        { status: 401 },
-      );
+      return NextResponse.json({ error: "Correo o contraseña incorrectos." }, { status: 401 });
     }
 
     if (error instanceof InactiveOrMissingUserProfileError) {
@@ -77,4 +74,3 @@ export async function POST(request: Request) {
     );
   }
 }
-

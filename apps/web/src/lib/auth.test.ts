@@ -190,9 +190,9 @@ describe("CY-019 authentication & role authorization (apps/web)", () => {
   });
 
   it("resolves user from bearer token and rejects missing/expired tokens", async () => {
-    await expect(
-      getAuthenticatedUserFromToken({ accessToken: "", env: TEST_ENV }),
-    ).rejects.toThrow(UnauthenticatedError);
+    await expect(getAuthenticatedUserFromToken({ accessToken: "", env: TEST_ENV })).rejects.toThrow(
+      UnauthenticatedError,
+    );
 
     const fetchMock = vi.fn<typeof fetch>(async (input) => {
       const url = String(input);
@@ -245,4 +245,3 @@ describe("CY-019 authentication & role authorization (apps/web)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
-

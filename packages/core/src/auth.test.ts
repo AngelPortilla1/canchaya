@@ -79,9 +79,7 @@ describe("CY-019 role and permission model (@canchaya/core)", () => {
       expect(hasRolePermission(null, permission)).toBe(false);
       expect(hasRolePermission(undefined, permission)).toBe(false);
       expect(hasRolePermission(inactiveOwner, permission)).toBe(false);
-      expect(
-        hasRolePermission({ ...ownerContext, tenantId: "   " }, permission),
-      ).toBe(false);
+      expect(hasRolePermission({ ...ownerContext, tenantId: "   " }, permission)).toBe(false);
     }
   });
 
@@ -155,4 +153,3 @@ describe("CY-019 role and permission model (@canchaya/core)", () => {
     expect(canAccessPanelPath(ownerContext, "/panel/caja")).toBe(true);
   });
 });
-

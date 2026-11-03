@@ -1,10 +1,6 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import {
-  ACCESS_TOKEN_COOKIE_NAME,
-  REFRESH_TOKEN_COOKIE_NAME,
-  signOutWithToken,
-} from "@/lib/auth";
+import { ACCESS_TOKEN_COOKIE_NAME, REFRESH_TOKEN_COOKIE_NAME, signOutWithToken } from "@/lib/auth";
 
 export async function POST() {
   const cookieStore = await cookies();
@@ -21,4 +17,3 @@ export async function POST() {
   response.cookies.delete(REFRESH_TOKEN_COOKIE_NAME);
   return response;
 }
-

@@ -186,7 +186,9 @@ export default function LoginPage() {
       <section className="rounded-xl border border-slate-800/80 bg-slate-900/40 p-4 text-xs text-slate-400">
         <p className="font-semibold text-slate-200"> Niveles de acceso (RF-16):</p>
         <p className="mt-1">
-          <strong className="text-slate-200">Empleado ({STAFF_PERMISSIONS.length} permisos):</strong>{" "}
+          <strong className="text-slate-200">
+            Empleado ({STAFF_PERMISSIONS.length} permisos):
+          </strong>{" "}
           operación diaria de reservas, calendario, validación de anticipos y cobro de saldos.
         </p>
         <p className="mt-1">
@@ -199,4 +201,3 @@ export default function LoginPage() {
     </main>
   );
 }
-

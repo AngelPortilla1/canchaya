@@ -16,10 +16,7 @@ export const OWNER_ONLY_PERMISSIONS = [
   "reports:view_financial",
 ] as const;
 
-export const ALL_ROLE_PERMISSIONS = [
-  ...STAFF_PERMISSIONS,
-  ...OWNER_ONLY_PERMISSIONS,
-] as const;
+export const ALL_ROLE_PERMISSIONS = [...STAFF_PERMISSIONS, ...OWNER_ONLY_PERMISSIONS] as const;
 
 export type RolePermission = (typeof ALL_ROLE_PERMISSIONS)[number];
 
@@ -183,4 +180,3 @@ export function canAccessPanelPath(
   }
   return hasRolePermission(user, requiredPermission);
 }
-

@@ -25,7 +25,6 @@ export default function HomePage() {
         </Link>
       </div>
 
-
       <header className="space-y-2">
         <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">CanchaYa</h1>
         <p className="text-base text-slate-300">
