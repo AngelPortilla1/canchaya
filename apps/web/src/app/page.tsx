@@ -6,14 +6,23 @@ import {
   DEFAULT_TIMEZONE,
   calculateDepositCop,
 } from "@canchaya/core";
+import Link from "next/link";
 
 export default function HomePage() {
   const depositCop = calculateDepositCop(DEFAULT_HOURLY_PRICE_COP, DEFAULT_DEPOSIT_PERCENT);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col justify-center gap-6 px-6 py-16">
-      <div className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-300">
-        Piloto · Pamplona, Colombia ({DEFAULT_TIMEZONE})
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-300">
+          Piloto · Pamplona, Colombia ({DEFAULT_TIMEZONE})
+        </div>
+        <Link
+          href="/login"
+          className="inline-flex items-center rounded-xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400"
+        >
+          Ingresar al panel →
+        </Link>
       </div>
 
       <header className="space-y-2">
