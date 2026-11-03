@@ -15,7 +15,7 @@ describe("CI/CD deployment workflows (CY-015)", () => {
     expect(content).toContain("branches: [develop]");
     expect(content).toContain("cancel-in-progress: false");
     expect(content).toContain("name: staging");
-    expect(content).toContain("supabase db push");
+    expect(content).toContain("supabase db push --remote --yes");
     expect(content).toContain("vercel pull --yes --environment=preview");
     expect(content).toContain("vercel deploy --prebuilt");
 
@@ -33,7 +33,7 @@ describe("CI/CD deployment workflows (CY-015)", () => {
     expect(content).toContain('tags: ["v*.*.*"]');
     expect(content).toContain("cancel-in-progress: false");
     expect(content).toContain("name: production");
-    expect(content).toContain("supabase db push");
+    expect(content).toContain("supabase db push --remote --yes");
     expect(content).toContain("vercel pull --yes --environment=production");
     expect(content).toContain("vercel build --prod");
     expect(content).toContain("vercel deploy --prebuilt --prod");
