@@ -24,9 +24,7 @@ export interface DailyOperatingHoursWindow {
   isClosed?: boolean;
 }
 
-export type WeeklyOperatingHours = Partial<
-  Record<WeekdayName, DailyOperatingHoursWindow | null>
->;
+export type WeeklyOperatingHours = Partial<Record<WeekdayName, DailyOperatingHoursWindow | null>>;
 
 export const DEFAULT_PILOT_OPERATING_HOURS: Readonly<
   Record<WeekdayName, DailyOperatingHoursWindow>
@@ -272,8 +270,7 @@ function parseReferenceTimeMs(referenceTime?: string | Date): number {
   if (referenceTime === undefined) {
     return Date.now();
   }
-  const ms =
-    referenceTime instanceof Date ? referenceTime.getTime() : Date.parse(referenceTime);
+  const ms = referenceTime instanceof Date ? referenceTime.getTime() : Date.parse(referenceTime);
   if (Number.isNaN(ms)) {
     throw new Error("Invalid referenceTime timestamp");
   }
@@ -353,9 +350,7 @@ function matchesRequestedSport(court: CourtAvailabilityItem, sport: SportCode | 
  *   including evening slots that cross UTC midnight (`19:00`–`24:00` local = `00:00Z`–`05:00Z` next day).
  * - Treats `HOLD` bookings with `hold_expires_at <= referenceTime` as expired (free).
  */
-export function getAvailableSlotsBySportAndDate(
-  input: GetAvailableSlotsInput,
-): AvailabilitySlot[] {
+export function getAvailableSlotsBySportAndDate(input: GetAvailableSlotsInput): AvailabilitySlot[] {
   const {
     tenantId,
     sport,
@@ -465,4 +460,3 @@ export function getAvailableSlotsBySportAndDate(
 
   return slots;
 }
-

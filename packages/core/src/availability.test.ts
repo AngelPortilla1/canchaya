@@ -60,10 +60,7 @@ describe("Availability service by sport and date (CY-030)", () => {
 
     for (const slot of slots) {
       expect(slot.isAvailable).toBe(true);
-      expect(slot.availableCourts.map((court) => court.id)).toEqual([
-        padelCourt1Id,
-        padelCourt2Id,
-      ]);
+      expect(slot.availableCourts.map((court) => court.id)).toEqual([padelCourt1Id, padelCourt2Id]);
       expect(slot.occupiedCourtIds).toEqual([]);
     }
   });
@@ -300,11 +297,7 @@ describe("Availability service by sport and date (CY-030)", () => {
     ).toThrow(/Invalid calendar date/);
 
     expect(() =>
-      isBookingBlockingAt(
-        { status: "HOLD", hold_expires_at: null },
-        "2026-11-05T18:00:00.000Z",
-      ),
+      isBookingBlockingAt({ status: "HOLD", hold_expires_at: null }, "2026-11-05T18:00:00.000Z"),
     ).toThrow(/hold_expires_at/);
   });
 });
-
