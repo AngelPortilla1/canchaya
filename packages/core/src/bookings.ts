@@ -234,4 +234,3 @@ export function createHoldBooking(input: CreateHoldBookingInput): BookingRecord 
     updated_at: nowIso,
   };
 }
-
