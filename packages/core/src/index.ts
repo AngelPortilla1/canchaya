@@ -29,3 +29,4 @@ export function calculateDepositCop(
 export * from "./schema";
 export * from "./auth";
 export * from "./availability";
+export * from "./bookings";
