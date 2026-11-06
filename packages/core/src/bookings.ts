@@ -13,7 +13,43 @@ import {
   localDateTimeToUtcIso,
   parseWallClockTimeMinutes,
 } from "./availability";
-import { assertNoBookingOverlap, type BookingRecord } from "./schema";
+import {
+  assertNoBookingOverlap,
+  type BookingRecord,
+  type PaymentRecord,
+  type PaymentStatus,
+  type PaymentType,
+} from "./schema";
+
+export const HOLD_EXPIRED_CANCELLATION_REASON = "HOLD_EXPIRED" as const;
+export const EXPIRE_HOLD_BOOKINGS_CRON_JOB_NAME = "expire-overdue-hold-bookings" as const;
+export const EXPIRE_HOLD_BOOKINGS_CRON_SCHEDULE = "* * * * *" as const;
+export const EXPIRE_HOLD_BOOKINGS_SQL_FUNCTION = "expire_overdue_hold_bookings" as const;
+
+export type DepositPaymentCandidate = Pick<
+  PaymentRecord,
+  "tenant_id" | "booking_id" | "payment_type" | "status"
+>;
+
+export interface ExpireOverdueHoldBookingsInput {
+  bookings: readonly BookingRecord[];
+  /**
+   * Optional payment records used to protect `HOLD` bookings that already have a deposit
+   * in `pending_validation` or `approved` status from being expired while awaiting staff review.
+   */
+  payments?: readonly DepositPaymentCandidate[];
+  /**
+   * Reference timestamp representing "now" in UTC when the expiration job runs.
+   */
+  referenceTime?: string | Date;
+}
+
+export interface ExpireOverdueHoldBookingsResult {
+  bookings: BookingRecord[];
+  expiredBookings: BookingRecord[];
+  expiredBookingIds: string[];
+  expiredCount: number;
+}
 
 export interface CreateHoldBookingInput {
   id?: string;
@@ -232,5 +268,92 @@ export function createHoldBooking(input: CreateHoldBookingInput): BookingRecord 
     notes,
     created_at: nowIso,
     updated_at: nowIso,
+  };
+}
+
+const ACTIVE_DEPOSIT_STATUSES: readonly PaymentStatus[] = ["pending_validation", "approved"];
+const DEPOSIT_PAYMENT_TYPE: PaymentType = "deposit";
+
+/**
+ * Returns true if the booking already has a deposit payment in `pending_validation` or `approved`
+ * status belonging to the same tenant.
+ */
+export function hasActiveDepositPayment(
+  booking: Pick<BookingRecord, "id" | "tenant_id">,
+  payments: readonly DepositPaymentCandidate[] = [],
+): boolean {
+  return payments.some(
+    (payment) =>
+      payment.tenant_id === booking.tenant_id &&
+      payment.booking_id === booking.id &&
+      payment.payment_type === DEPOSIT_PAYMENT_TYPE &&
+      ACTIVE_DEPOSIT_STATUSES.includes(payment.status),
+  );
+}
+
+/**
+ * Checks whether a booking is in `HOLD` status and its `hold_expires_at` timestamp
+ * is less than or equal to `referenceTime` (`hold_expires_at <= now()`).
+ */
+export function isHoldBookingExpired(
+  booking: Pick<BookingRecord, "status" | "hold_expires_at">,
+  referenceTime?: string | Date,
+): boolean {
+  if (booking.status !== "HOLD") {
+    return false;
+  }
+  if (!booking.hold_expires_at) {
+    throw new Error("HOLD booking must include hold_expires_at timestamp");
+  }
+  const expiresAtMs = Date.parse(booking.hold_expires_at);
+  if (Number.isNaN(expiresAtMs)) {
+    throw new Error("Invalid ISO-8601 UTC timestamp in hold_expires_at");
+  }
+  const referenceDate = resolveReferenceDate(referenceTime);
+  return expiresAtMs <= referenceDate.getTime();
+}
+
+/**
+ * Expires overdue `HOLD` bookings (`hold_expires_at <= referenceTime`) that do not have an
+ * active deposit (`pending_validation` or `approved`), transitioning them to `CANCELLED`
+ * with `cancellation_reason = 'HOLD_EXPIRED'` and releasing their court slots.
+ *
+ * Mirrors the PostgreSQL `public.expire_overdue_hold_bookings(p_now)` cron job (CY-032).
+ */
+export function expireOverdueHoldBookings(
+  input: ExpireOverdueHoldBookingsInput,
+): ExpireOverdueHoldBookingsResult {
+  const { bookings, payments = [], referenceTime } = input;
+  const referenceDate = resolveReferenceDate(referenceTime);
+  const nowIso = referenceDate.toISOString();
+
+  const updatedBookings: BookingRecord[] = [];
+  const expiredBookings: BookingRecord[] = [];
+  const expiredBookingIds: string[] = [];
+
+  for (const booking of bookings) {
+    if (
+      isHoldBookingExpired(booking, referenceDate) &&
+      !hasActiveDepositPayment(booking, payments)
+    ) {
+      const expiredRecord: BookingRecord = {
+        ...booking,
+        status: "CANCELLED",
+        cancellation_reason: booking.cancellation_reason ?? HOLD_EXPIRED_CANCELLATION_REASON,
+        updated_at: nowIso,
+      };
+      updatedBookings.push(expiredRecord);
+      expiredBookings.push(expiredRecord);
+      expiredBookingIds.push(expiredRecord.id);
+    } else {
+      updatedBookings.push(booking);
+    }
+  }
+
+  return {
+    bookings: updatedBookings,
+    expiredBookings,
+    expiredBookingIds,
+    expiredCount: expiredBookings.length,
   };
 }
