@@ -1,15 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertNoBookingOverlap,
   BookingOverlapError,
   computeHoldExpiresAt,
   createHoldBooking,
   DEFAULT_PILOT_OPERATING_HOURS,
+  expireOverdueHoldBookings,
   getAvailableSlotsBySportAndDate,
+  HOLD_EXPIRED_CANCELLATION_REASON,
+  isHoldBookingExpired,
   PILOT_SEED_COURTS,
   PILOT_SEED_TENANT_ID,
   POSTGRES_EXCLUSION_VIOLATION_CODE,
   type BookingAvailabilityCandidate,
+  type BookingRecord,
   type CourtAvailabilityItem,
+  type DepositPaymentCandidate,
 } from "./index";
 
 const pilotCourts: CourtAvailabilityItem[] = PILOT_SEED_COURTS.map((court) => ({
@@ -217,5 +223,147 @@ describe("HOLD booking creation with 15-minute expiration (CY-031)", () => {
     expect(() => computeHoldExpiresAt("2026-11-05T21:00:00.000Z", 0)).toThrow(
       /holdDurationMinutes must be a positive integer/,
     );
+  });
+});
+
+describe("Job that expires overdue HOLD bookings and releases court slots (CY-032)", () => {
+  it("identifies expired HOLD bookings (hold_expires_at <= referenceTime) and ignores active or non-HOLD bookings", () => {
+    const holdBooking = createHoldBooking({
+      id: "hold-check-1",
+      tenantId: PILOT_SEED_TENANT_ID,
+      courtId: padelCourt1Id,
+      customerId,
+      startsAtUtc: "2026-11-05T21:00:00.000Z",
+      endsAtUtc: "2026-11-05T22:00:00.000Z",
+      referenceTime: "2026-11-05T18:00:00.000Z",
+    });
+
+    expect(isHoldBookingExpired(holdBooking, "2026-11-05T18:14:59.999Z")).toBe(false);
+    expect(isHoldBookingExpired(holdBooking, "2026-11-05T18:15:00.000Z")).toBe(true);
+    expect(isHoldBookingExpired(holdBooking, "2026-11-05T18:20:00.000Z")).toBe(true);
+
+    const confirmedBooking: BookingRecord = {
+      ...holdBooking,
+      status: "CONFIRMED",
+      hold_expires_at: null,
+    };
+    expect(isHoldBookingExpired(confirmedBooking, "2026-11-05T19:00:00.000Z")).toBe(false);
+  });
+
+  it("expires overdue HOLD bookings without deposit to CANCELLED (HOLD_EXPIRED) and frees the court slot in GiST exclusion", () => {
+    const overdueHold = createHoldBooking({
+      id: "hold-overdue-no-deposit",
+      tenantId: PILOT_SEED_TENANT_ID,
+      courtId: padelCourt1Id,
+      customerId,
+      startsAtUtc: "2026-11-05T22:00:00.000Z",
+      endsAtUtc: "2026-11-05T23:00:00.000Z",
+      referenceTime: "2026-11-05T18:00:00.000Z", // expires at 18:15:00Z
+    });
+
+    const activeHold = createHoldBooking({
+      id: "hold-still-active",
+      tenantId: PILOT_SEED_TENANT_ID,
+      courtId: padelCourt2Id,
+      customerId,
+      startsAtUtc: "2026-11-05T22:00:00.000Z",
+      endsAtUtc: "2026-11-05T23:00:00.000Z",
+      referenceTime: "2026-11-05T18:10:00.000Z", // expires at 18:25:00Z
+    });
+
+    // Before job runs, raw GiST exclusion check rejects a new CONFIRMED booking on Court 1
+    expect(() =>
+      assertNoBookingOverlap([overdueHold, activeHold], {
+        id: "new-booking-attempt",
+        tenant_id: PILOT_SEED_TENANT_ID,
+        court_id: padelCourt1Id,
+        status: "CONFIRMED",
+        starts_at: "2026-11-05T22:00:00.000Z",
+        ends_at: "2026-11-05T23:00:00.000Z",
+      }),
+    ).toThrowError(BookingOverlapError);
+
+    // Run expiration job at 18:16:00Z
+    const jobTime = "2026-11-05T18:16:00.000Z";
+    const result = expireOverdueHoldBookings({
+      bookings: [overdueHold, activeHold],
+      referenceTime: jobTime,
+    });
+
+    expect(result.expiredCount).toBe(1);
+    expect(result.expiredBookingIds).toEqual(["hold-overdue-no-deposit"]);
+    expect(result.expiredBookings[0]?.status).toBe("CANCELLED");
+    expect(result.expiredBookings[0]?.cancellation_reason).toBe(HOLD_EXPIRED_CANCELLATION_REASON);
+    expect(result.expiredBookings[0]?.updated_at).toBe(jobTime);
+
+    // Active HOLD on Court 2 remains untouched
+    const remainingCourt2 = result.bookings.find((b) => b.id === "hold-still-active");
+    expect(remainingCourt2?.status).toBe("HOLD");
+
+    // Now the GiST exclusion constraint allows booking Court 1 for the exact same slot
+    expect(() =>
+      assertNoBookingOverlap(result.bookings, {
+        id: "new-booking-attempt",
+        tenant_id: PILOT_SEED_TENANT_ID,
+        court_id: padelCourt1Id,
+        status: "CONFIRMED",
+        starts_at: "2026-11-05T22:00:00.000Z",
+        ends_at: "2026-11-05T23:00:00.000Z",
+      }),
+    ).not.toThrow();
+
+    // Running the job a second time is idempotent (0 newly expired)
+    const secondRun = expireOverdueHoldBookings({
+      bookings: result.bookings,
+      referenceTime: "2026-11-05T18:17:00.000Z",
+    });
+    expect(secondRun.expiredCount).toBe(0);
+  });
+
+  it("preserves overdue HOLD bookings that have a deposit pending_validation or approved, and expires those with rejected deposit", () => {
+    const holdWithPendingDeposit = createHoldBooking({
+      id: "hold-pending-receipt",
+      tenantId: PILOT_SEED_TENANT_ID,
+      courtId: padelCourt1Id,
+      customerId,
+      startsAtUtc: "2026-11-05T20:00:00.000Z",
+      endsAtUtc: "2026-11-05T21:00:00.000Z",
+      referenceTime: "2026-11-05T18:00:00.000Z",
+    });
+
+    const holdWithRejectedDeposit = createHoldBooking({
+      id: "hold-rejected-receipt",
+      tenantId: PILOT_SEED_TENANT_ID,
+      courtId: padelCourt2Id,
+      customerId,
+      startsAtUtc: "2026-11-05T20:00:00.000Z",
+      endsAtUtc: "2026-11-05T21:00:00.000Z",
+      referenceTime: "2026-11-05T18:00:00.000Z",
+    });
+
+    const payments: DepositPaymentCandidate[] = [
+      {
+        tenant_id: PILOT_SEED_TENANT_ID,
+        booking_id: "hold-pending-receipt",
+        payment_type: "deposit",
+        status: "pending_validation",
+      },
+      {
+        tenant_id: PILOT_SEED_TENANT_ID,
+        booking_id: "hold-rejected-receipt",
+        payment_type: "deposit",
+        status: "rejected",
+      },
+    ];
+
+    const result = expireOverdueHoldBookings({
+      bookings: [holdWithPendingDeposit, holdWithRejectedDeposit],
+      payments,
+      referenceTime: "2026-11-05T18:20:00.000Z",
+    });
+
+    expect(result.expiredBookingIds).toEqual(["hold-rejected-receipt"]);
+    expect(result.bookings.find((b) => b.id === "hold-pending-receipt")?.status).toBe("HOLD");
+    expect(result.bookings.find((b) => b.id === "hold-rejected-receipt")?.status).toBe("CANCELLED");
   });
 });
