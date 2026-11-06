@@ -24,6 +24,12 @@ import {
   TENANT_SCOPED_TABLES,
   validatePaymentBreakdownCop,
 } from "./schema";
+import {
+  EXPIRE_HOLD_BOOKINGS_CRON_JOB_NAME,
+  EXPIRE_HOLD_BOOKINGS_CRON_SCHEDULE,
+  EXPIRE_HOLD_BOOKINGS_SQL_FUNCTION,
+  HOLD_EXPIRED_CANCELLATION_REASON,
+} from "./bookings";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const migrationsDir = path.join(repoRoot, "supabase/migrations");
@@ -491,5 +497,30 @@ describe("Pilot seed data (CY-021)", () => {
     expect(seedSql).toContain("dueno@canchaya.test");
     expect(seedSql).toContain("empleado@canchaya.test");
     expect(seedSql).toMatch(/ON CONFLICT[\s\S]*DO (UPDATE|NOTHING)/i);
+  });
+});
+
+describe("pg_cron job for expiring overdue HOLD bookings (CY-032)", () => {
+  const expireHoldMigrationFile = "20261105220000_expire_hold_bookings_cron.sql";
+
+  it("defines a versioned migration with expire_overdue_hold_bookings() and pg_cron schedule", () => {
+    const migrationPath = path.join(migrationsDir, expireHoldMigrationFile);
+    expect(existsSync(migrationPath)).toBe(true);
+
+    const sql = readFileSync(migrationPath, "utf8");
+    expect(sql).toMatch(/CREATE EXTENSION IF NOT EXISTS pg_cron;/i);
+    expect(sql).toContain(
+      `CREATE OR REPLACE FUNCTION public.${EXPIRE_HOLD_BOOKINGS_SQL_FUNCTION}(`,
+    );
+    expect(sql).toMatch(/SECURITY DEFINER\s+SET search_path = public/i);
+    expect(sql).toMatch(/status\s*=\s*'CANCELLED'/i);
+    expect(sql).toContain(HOLD_EXPIRED_CANCELLATION_REASON);
+    expect(sql).toMatch(/b\.status\s*=\s*'HOLD'/i);
+    expect(sql).toMatch(/b\.hold_expires_at\s*<=\s*v_effective_now/i);
+    expect(sql).toMatch(/p\.payment_type\s*=\s*'deposit'/i);
+    expect(sql).toMatch(/p\.status\s+IN\s*\(\s*'pending_validation',\s*'approved'\s*\)/i);
+    expect(sql).toContain(EXPIRE_HOLD_BOOKINGS_CRON_JOB_NAME);
+    expect(sql).toContain(EXPIRE_HOLD_BOOKINGS_CRON_SCHEDULE);
+    expect(sql).toMatch(/PERFORM\s+cron\.schedule\s*\(/i);
   });
 });
