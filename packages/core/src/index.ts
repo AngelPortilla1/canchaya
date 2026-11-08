@@ -30,3 +30,4 @@ export * from "./schema";
 export * from "./auth";
 export * from "./availability";
 export * from "./bookings";
+export * from "./booking-state-machine";

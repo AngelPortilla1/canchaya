@@ -13,6 +13,7 @@ import {
   localDateTimeToUtcIso,
   parseWallClockTimeMinutes,
 } from "./availability";
+import { transitionBooking } from "./booking-state-machine";
 import {
   assertNoBookingOverlap,
   type BookingRecord,
@@ -337,9 +338,10 @@ export function expireOverdueHoldBookings(
       !hasActiveDepositPayment(booking, payments)
     ) {
       const expiredRecord: BookingRecord = {
-        ...booking,
-        status: "CANCELLED",
-        cancellation_reason: booking.cancellation_reason ?? HOLD_EXPIRED_CANCELLATION_REASON,
+        ...transitionBooking(booking, "CANCELLED", {
+          referenceTime: referenceDate,
+          cancellationReason: booking.cancellation_reason ?? HOLD_EXPIRED_CANCELLATION_REASON,
+        }),
         updated_at: nowIso,
       };
       updatedBookings.push(expiredRecord);
