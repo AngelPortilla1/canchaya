@@ -27,9 +27,7 @@ export class InvalidBookingTransitionError extends Error {
   readonly to: BookingStatus;
 
   constructor(from: BookingStatus, to: BookingStatus, detail?: string) {
-    super(
-      `Invalid booking transition ${from} -> ${to}${detail ? `: ${detail}` : ""}`,
-    );
+    super(`Invalid booking transition ${from} -> ${to}${detail ? `: ${detail}` : ""}`);
     this.name = "InvalidBookingTransitionError";
     this.from = from;
     this.to = to;
