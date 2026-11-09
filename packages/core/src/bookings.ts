@@ -558,8 +558,7 @@ export function rescheduleBooking(input: RescheduleBookingInput): RescheduleBook
     allowMultipleReschedules,
   });
 
-  const targetCourtId =
-    newCourtId !== undefined ? newCourtId.trim() : booking.court_id;
+  const targetCourtId = newCourtId !== undefined ? newCourtId.trim() : booking.court_id;
   if (!targetCourtId || targetCourtId.length === 0) {
     throw new Error("newCourtId must be a non-empty court ID");
   }
@@ -596,8 +595,7 @@ export function rescheduleBooking(input: RescheduleBookingInput): RescheduleBook
     newBookingId && newBookingId.trim().length > 0 ? newBookingId.trim() : crypto.randomUUID();
 
   const activeBlockingBookings = existingBookings.filter(
-    (candidate) =>
-      candidate.id !== booking.id && isBookingBlockingAt(candidate, referenceDate),
+    (candidate) => candidate.id !== booking.id && isBookingBlockingAt(candidate, referenceDate),
   );
 
   assertNoBookingOverlap(activeBlockingBookings, {
