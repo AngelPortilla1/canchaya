@@ -3,6 +3,7 @@ export const DEFAULT_SLOT_MINUTES = 60 as const;
 export const DEFAULT_HOLD_MINUTES = 15 as const;
 export const DEFAULT_HOURLY_PRICE_COP = 60_000 as const;
 export const DEFAULT_DEPOSIT_PERCENT = 20 as const;
+export const DEFAULT_MIN_RESCHEDULE_HOURS = 4 as const;
 
 export type SportCode = "padel" | "futbol_5";
 

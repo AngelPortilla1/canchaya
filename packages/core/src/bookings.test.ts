@@ -1,21 +1,28 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertCanRescheduleBooking,
   assertNoBookingOverlap,
   BookingOverlapError,
+  canRescheduleBooking,
   computeHoldExpiresAt,
   createHoldBooking,
+  DEFAULT_MIN_RESCHEDULE_HOURS,
   DEFAULT_PILOT_OPERATING_HOURS,
   expireOverdueHoldBookings,
   getAvailableSlotsBySportAndDate,
   HOLD_EXPIRED_CANCELLATION_REASON,
+  InvalidBookingTransitionError,
   isHoldBookingExpired,
   PILOT_SEED_COURTS,
   PILOT_SEED_TENANT_ID,
   POSTGRES_EXCLUSION_VIOLATION_CODE,
+  rescheduleBooking,
+  ReschedulePolicyError,
   type BookingAvailabilityCandidate,
   type BookingRecord,
   type CourtAvailabilityItem,
   type DepositPaymentCandidate,
+  type PaymentRecord,
 } from "./index";
 
 const pilotCourts: CourtAvailabilityItem[] = PILOT_SEED_COURTS.map((court) => ({
@@ -365,5 +372,264 @@ describe("Job that expires overdue HOLD bookings and releases court slots (CY-03
     expect(result.expiredBookingIds).toEqual(["hold-rejected-receipt"]);
     expect(result.bookings.find((b) => b.id === "hold-pending-receipt")?.status).toBe("HOLD");
     expect(result.bookings.find((b) => b.id === "hold-rejected-receipt")?.status).toBe("CANCELLED");
+  });
+});
+
+describe("Booking rescheduling with configurable minimum notice and preserved deposit (CY-034)", () => {
+  function makeConfirmedBooking(overrides: Partial<BookingRecord> = {}): BookingRecord {
+    return {
+      id: "booking-confirmed-original",
+      tenant_id: PILOT_SEED_TENANT_ID,
+      court_id: padelCourt1Id,
+      customer_id: customerId,
+      status: "CONFIRMED",
+      // 2026-11-10 19:00-20:00 America/Bogota = 2026-11-11 00:00-01:00 UTC
+      starts_at: "2026-11-11T00:00:00.000Z",
+      ends_at: "2026-11-11T01:00:00.000Z",
+      hold_expires_at: null,
+      total_price_cop: 60_000,
+      deposit_required_cop: 12_000,
+      balance_due_cop: 48_000,
+      rescheduled_from_booking_id: null,
+      created_by_user_id: null,
+      cancellation_reason: null,
+      notes: "Reserva confirmada con anticipo",
+      created_at: "2026-11-08T15:00:00.000Z",
+      updated_at: "2026-11-08T15:10:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("reschedules a CONFIRMED booking when notice >= minRescheduleHours, releasing the old slot and preserving integer COP deposit", () => {
+    const confirmedBooking = makeConfirmedBooking();
+    const depositPayment: PaymentRecord = {
+      id: "pay-deposit-1",
+      tenant_id: PILOT_SEED_TENANT_ID,
+      booking_id: confirmedBooking.id,
+      payment_type: "deposit",
+      method: "transfer",
+      status: "approved",
+      amount_cop: 12_000,
+      cash_amount_cop: 0,
+      transfer_amount_cop: 12_000,
+      receipt_media_url: "https://storage.canchaya.test/receipts/1.jpg",
+      validated_by_user_id: "55555555-5555-4555-8555-555555555502",
+      validated_at: "2026-11-08T15:10:00.000Z",
+      rejection_reason: null,
+      created_at: "2026-11-08T15:05:00.000Z",
+      updated_at: "2026-11-08T15:10:00.000Z",
+    };
+
+    // Exactly 4 hours (DEFAULT_MIN_RESCHEDULE_HOURS) before starts_at (2026-11-11T00:00:00Z)
+    const exactBoundaryNow = "2026-11-10T20:00:00.000Z";
+    expect(DEFAULT_MIN_RESCHEDULE_HOURS).toBe(4);
+    expect(canRescheduleBooking(confirmedBooking, { referenceTime: exactBoundaryNow })).toBe(true);
+
+    const { originalBooking, newBooking, payments } = rescheduleBooking({
+      booking: confirmedBooking,
+      newBookingId: "booking-rescheduled-new",
+      localDate: "2026-11-11",
+      localStartTime: "20:00",
+      referenceTime: exactBoundaryNow,
+      existingBookings: [confirmedBooking],
+      payments: [depositPayment],
+    });
+
+    // Original booking transitions to RESCHEDULED
+    expect(originalBooking.status).toBe("RESCHEDULED");
+    expect(originalBooking.updated_at).toBe(exactBoundaryNow);
+
+    // New booking is CONFIRMED on the new slot and preserves deposit/balance in integer COP
+    expect(newBooking).toEqual({
+      id: "booking-rescheduled-new",
+      tenant_id: PILOT_SEED_TENANT_ID,
+      court_id: padelCourt1Id,
+      customer_id: customerId,
+      status: "CONFIRMED",
+      // 2026-11-11 20:00-21:00 America/Bogota = 2026-11-12 01:00-02:00 UTC
+      starts_at: "2026-11-12T01:00:00.000Z",
+      ends_at: "2026-11-12T02:00:00.000Z",
+      hold_expires_at: null,
+      total_price_cop: 60_000,
+      deposit_required_cop: 12_000,
+      balance_due_cop: 48_000,
+      rescheduled_from_booking_id: confirmedBooking.id,
+      created_by_user_id: null,
+      cancellation_reason: null,
+      notes: "Reserva confirmada con anticipo",
+      created_at: exactBoundaryNow,
+      updated_at: exactBoundaryNow,
+    });
+
+    // Deposit payment is reassigned to the new booking
+    expect(payments[0]?.booking_id).toBe("booking-rescheduled-new");
+    expect(payments[0]?.amount_cop).toBe(12_000);
+
+    // Old slot (2026-11-10 19:00 local) is now free for another customer in GiST exclusion & availability
+    expect(() =>
+      assertNoBookingOverlap([originalBooking, newBooking], {
+        id: "another-customer-booking",
+        tenant_id: PILOT_SEED_TENANT_ID,
+        court_id: padelCourt1Id,
+        status: "CONFIRMED",
+        starts_at: confirmedBooking.starts_at,
+        ends_at: confirmedBooking.ends_at,
+      }),
+    ).not.toThrow();
+  });
+
+  it("enforces configurable minRescheduleHours and rejects rescheduling when notice is insufficient", () => {
+    const confirmedBooking = makeConfirmedBooking({
+      starts_at: "2026-11-11T00:00:00.000Z",
+      ends_at: "2026-11-11T01:00:00.000Z",
+    });
+
+    // 3 hours 59 minutes 59 seconds before starts_at with default 4h rule -> rejected
+    const oneSecondTooLate = "2026-11-10T20:00:01.000Z";
+    expect(canRescheduleBooking(confirmedBooking, { referenceTime: oneSecondTooLate })).toBe(false);
+
+    expect(() =>
+      rescheduleBooking({
+        booking: confirmedBooking,
+        startsAtUtc: "2026-11-12T00:00:00.000Z",
+        endsAtUtc: "2026-11-12T01:00:00.000Z",
+        referenceTime: oneSecondTooLate,
+      }),
+    ).toThrowError(ReschedulePolicyError);
+
+    try {
+      assertCanRescheduleBooking(confirmedBooking, {
+        referenceTime: oneSecondTooLate,
+        minRescheduleHours: 4,
+      });
+      expect.unreachable("Should have thrown INSUFFICIENT_NOTICE");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ReschedulePolicyError);
+      expect((error as ReschedulePolicyError).code).toBe("INSUFFICIENT_NOTICE");
+    }
+
+    // If tenant configures min_reschedule_hours = 2, then 3h59m before starts_at is allowed
+    expect(
+      canRescheduleBooking(confirmedBooking, {
+        referenceTime: oneSecondTooLate,
+        minRescheduleHours: 2,
+      }),
+    ).toBe(true);
+
+    // If tenant configures min_reschedule_hours = 6, then 5h before starts_at is rejected
+    expect(
+      canRescheduleBooking(confirmedBooking, {
+        referenceTime: "2026-11-10T19:00:00.000Z",
+        minRescheduleHours: 6,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects rescheduling from non-CONFIRMED statuses or when allowMultipleReschedules is false for already-rescheduled bookings", () => {
+    const referenceNow = "2026-11-10T12:00:00.000Z";
+
+    for (const invalidStatus of [
+      "HOLD",
+      "COMPLETED",
+      "NO_SHOW",
+      "CANCELLED",
+      "RESCHEDULED",
+    ] as const) {
+      const booking = makeConfirmedBooking({
+        status: invalidStatus,
+        hold_expires_at: invalidStatus === "HOLD" ? "2026-11-10T12:15:00.000Z" : null,
+      });
+
+      expect(canRescheduleBooking(booking, { referenceTime: referenceNow })).toBe(false);
+      expect(() =>
+        rescheduleBooking({
+          booking,
+          startsAtUtc: "2026-11-12T00:00:00.000Z",
+          endsAtUtc: "2026-11-12T01:00:00.000Z",
+          referenceTime: referenceNow,
+        }),
+      ).toThrowError(InvalidBookingTransitionError);
+    }
+
+    const alreadyRescheduledOnce = makeConfirmedBooking({
+      rescheduled_from_booking_id: "previous-booking-id",
+    });
+
+    expect(
+      canRescheduleBooking(alreadyRescheduledOnce, {
+        referenceTime: referenceNow,
+        allowMultipleReschedules: false,
+      }),
+    ).toBe(false);
+
+    expect(() =>
+      rescheduleBooking({
+        booking: alreadyRescheduledOnce,
+        startsAtUtc: "2026-11-12T00:00:00.000Z",
+        endsAtUtc: "2026-11-12T01:00:00.000Z",
+        referenceTime: referenceNow,
+        allowMultipleReschedules: false,
+      }),
+    ).toThrow(/already been rescheduled/);
+  });
+
+  it("rejects rescheduling to a past slot or a slot occupied by another active booking (23P01), but ignores expired HOLDs", () => {
+    const confirmedBooking = makeConfirmedBooking();
+    const referenceNow = "2026-11-10T18:00:00.000Z";
+
+    // Target slot in the past
+    expect(() =>
+      rescheduleBooking({
+        booking: confirmedBooking,
+        startsAtUtc: "2026-11-10T17:00:00.000Z",
+        endsAtUtc: "2026-11-10T18:00:00.000Z",
+        referenceTime: referenceNow,
+      }),
+    ).toThrow(/cannot be in the past/);
+
+    const conflictingBooking: BookingAvailabilityCandidate = {
+      id: "other-confirmed-booking",
+      tenant_id: PILOT_SEED_TENANT_ID,
+      court_id: padelCourt2Id,
+      status: "CONFIRMED",
+      starts_at: "2026-11-12T00:00:00.000Z",
+      ends_at: "2026-11-12T01:00:00.000Z",
+    };
+
+    // Moving to Court 2 at an occupied time throws BookingOverlapError (23P01)
+    expect(() =>
+      rescheduleBooking({
+        booking: confirmedBooking,
+        newCourtId: padelCourt2Id,
+        startsAtUtc: "2026-11-12T00:00:00.000Z",
+        endsAtUtc: "2026-11-12T01:00:00.000Z",
+        referenceTime: referenceNow,
+        existingBookings: [confirmedBooking, conflictingBooking],
+      }),
+    ).toThrowError(BookingOverlapError);
+
+    // Moving to Court 2 where only an expired HOLD exists succeeds
+    const expiredHoldOnCourt2: BookingAvailabilityCandidate = {
+      id: "expired-hold-court2",
+      tenant_id: PILOT_SEED_TENANT_ID,
+      court_id: padelCourt2Id,
+      status: "HOLD",
+      starts_at: "2026-11-12T00:00:00.000Z",
+      ends_at: "2026-11-12T01:00:00.000Z",
+      hold_expires_at: "2026-11-10T17:59:00.000Z",
+    };
+
+    const movedToCourt2 = rescheduleBooking({
+      booking: confirmedBooking,
+      newBookingId: "moved-to-court-2",
+      newCourtId: padelCourt2Id,
+      startsAtUtc: "2026-11-12T00:00:00.000Z",
+      endsAtUtc: "2026-11-12T01:00:00.000Z",
+      referenceTime: referenceNow,
+      existingBookings: [confirmedBooking, expiredHoldOnCourt2],
+    });
+
+    expect(movedToCourt2.newBooking.court_id).toBe(padelCourt2Id);
+    expect(movedToCourt2.newBooking.status).toBe("CONFIRMED");
   });
 });
