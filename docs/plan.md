@@ -237,6 +237,7 @@ canchaya/
 │   └── seed.sql
 ├── docs/
 │   ├── adr/                # decisiones de arquitectura
+│   ├── ux/                 # wireframes del panel y flujos conversacionales
 │   ├── requisitos.md
 │   └── runbook.md          # qué hacer si algo se cae
 ├── .github/
