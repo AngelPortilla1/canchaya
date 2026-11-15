@@ -35,7 +35,10 @@ export async function GET(request: Request) {
 
     return NextResponse.json(calendar, { status: 200 });
   } catch (error) {
-    if (error instanceof UnauthenticatedError || error instanceof InactiveOrMissingUserProfileError) {
+    if (
+      error instanceof UnauthenticatedError ||
+      error instanceof InactiveOrMissingUserProfileError
+    ) {
       return NextResponse.json(
         { error: "Tu sesión expiró o no es válida. Inicia sesión nuevamente." },
         { status: 401 },

@@ -1,7 +1,4 @@
-import {
-  DEFAULT_PILOT_OPERATING_HOURS,
-  localDateTimeToUtcIso,
-} from "@canchaya/core";
+import { DEFAULT_PILOT_OPERATING_HOURS, localDateTimeToUtcIso } from "@canchaya/core";
 import { describe, expect, it, vi } from "vitest";
 import { loadTenantDailyCalendar } from "./calendar";
 
@@ -80,7 +77,9 @@ describe("loadTenantDailyCalendar", () => {
               deposit_required_cop: 12000,
               balance_due_cop: 48000,
               customer: { full_name: "Mateo Rojas" },
-              payments: [{ payment_type: "deposit", method: "transfer", status: "pending_validation" }],
+              payments: [
+                { payment_type: "deposit", method: "transfer", status: "pending_validation" },
+              ],
             },
           ]),
           { status: 200 },

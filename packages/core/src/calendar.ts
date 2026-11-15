@@ -18,12 +18,7 @@ import {
 import { type PaymentMethod, doTimeRangesOverlap } from "./schema";
 
 export type CalendarCellVisualState =
-  | "FREE"
-  | "HOLD"
-  | "PENDING_VALIDATION"
-  | "CONFIRMED"
-  | "COMPLETED"
-  | "NO_SHOW";
+  "FREE" | "HOLD" | "PENDING_VALIDATION" | "CONFIRMED" | "COMPLETED" | "NO_SHOW";
 
 export interface CalendarSportItem {
   id: string;

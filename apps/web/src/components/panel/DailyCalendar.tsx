@@ -149,16 +149,14 @@ function CalendarCellCard({
         <p className="mt-1 truncate text-xs font-semibold text-white">
           {booking.customerName ?? "Cliente"}
         </p>
-        <p className="text-[11px] text-emerald-200/90">
-          Saldo: {formatCop(booking.balanceDueCop)}
-        </p>
+        <p className="text-[11px] text-emerald-200/90">Saldo: {formatCop(booking.balanceDueCop)}</p>
       </button>
     );
   }
 
   if (cell.visualState === "COMPLETED") {
     const methodLabel = booking.balancePaymentMethod
-      ? PAYMENT_METHOD_LABELS[booking.balancePaymentMethod] ?? ""
+      ? (PAYMENT_METHOD_LABELS[booking.balancePaymentMethod] ?? "")
       : "";
     return (
       <button
