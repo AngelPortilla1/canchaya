@@ -117,13 +117,21 @@ export default function LoginPage() {
             </ul>
           </div>
 
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-700"
-          >
-            Cerrar sesión
-          </button>
+          <div className="flex flex-col gap-2">
+            <Link
+              href="/panel"
+              className="w-full rounded-xl bg-emerald-500 px-4 py-2.5 text-center text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
+            >
+              Ir al calendario del panel →
+            </Link>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-700"
+            >
+              Cerrar sesión
+            </button>
+          </div>
         </section>
       ) : (
         <form
