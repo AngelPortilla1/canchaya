@@ -3,6 +3,7 @@ import {
   assertCanRescheduleBooking,
   assertNoBookingOverlap,
   BookingOverlapError,
+  cancelBooking,
   canRescheduleBooking,
   computeHoldExpiresAt,
   createHoldBooking,
@@ -13,6 +14,7 @@ import {
   HOLD_EXPIRED_CANCELLATION_REASON,
   InvalidBookingTransitionError,
   isHoldBookingExpired,
+  moveHoldBooking,
   PILOT_SEED_COURTS,
   PILOT_SEED_TENANT_ID,
   POSTGRES_EXCLUSION_VIOLATION_CODE,
@@ -631,5 +633,122 @@ describe("Booking rescheduling with configurable minimum notice and preserved de
 
     expect(movedToCourt2.newBooking.court_id).toBe(padelCourt2Id);
     expect(movedToCourt2.newBooking.status).toBe("CONFIRMED");
+  });
+});
+
+describe("Manual panel booking operations (CY-037)", () => {
+  it("allows staff to reschedule a CONFIRMED booking even 30 minutes before start when minRescheduleHours is 0", () => {
+    const referenceNow = "2026-11-12T23:30:00.000Z";
+    const confirmedBooking: BookingRecord = {
+      id: "confirmed-rain-case",
+      tenant_id: PILOT_SEED_TENANT_ID,
+      court_id: padelCourt1Id,
+      customer_id: customerId,
+      status: "CONFIRMED",
+      starts_at: "2026-11-13T00:00:00.000Z",
+      ends_at: "2026-11-13T01:00:00.000Z",
+      hold_expires_at: null,
+      total_price_cop: 60000,
+      deposit_required_cop: 12000,
+      balance_due_cop: 48000,
+      rescheduled_from_booking_id: null,
+      created_by_user_id: null,
+      cancellation_reason: null,
+      notes: null,
+      created_at: "2026-11-10T15:00:00.000Z",
+      updated_at: "2026-11-10T15:05:00.000Z",
+    };
+
+    const result = rescheduleBooking({
+      booking: confirmedBooking,
+      newCourtId: padelCourt2Id,
+      localDate: "2026-11-13",
+      localStartTime: "19:00",
+      minRescheduleHours: 0,
+      referenceTime: referenceNow,
+      existingBookings: [confirmedBooking],
+    });
+
+    expect(result.originalBooking.status).toBe("RESCHEDULED");
+    expect(result.newBooking.status).toBe("CONFIRMED");
+    expect(result.newBooking.court_id).toBe(padelCourt2Id);
+    expect(result.newBooking.rescheduled_from_booking_id).toBe(confirmedBooking.id);
+  });
+
+  it("moves an active HOLD booking in place and rejects overlapping slots", () => {
+    const referenceNow = "2026-11-12T18:00:00.000Z";
+    const holdBooking = createHoldBooking({
+      id: "hold-move-1",
+      tenantId: PILOT_SEED_TENANT_ID,
+      courtId: padelCourt1Id,
+      customerId,
+      localDate: "2026-11-12",
+      localStartTime: "19:00",
+      referenceTime: referenceNow,
+    });
+
+    const conflicting: BookingAvailabilityCandidate = {
+      id: "busy-slot",
+      tenant_id: PILOT_SEED_TENANT_ID,
+      court_id: padelCourt2Id,
+      status: "CONFIRMED",
+      starts_at: "2026-11-13T01:00:00.000Z",
+      ends_at: "2026-11-13T02:00:00.000Z",
+    };
+
+    expect(() =>
+      moveHoldBooking({
+        booking: holdBooking,
+        newCourtId: padelCourt2Id,
+        localDate: "2026-11-12",
+        localStartTime: "20:00",
+        referenceTime: referenceNow,
+        existingBookings: [holdBooking, conflicting],
+      }),
+    ).toThrowError(BookingOverlapError);
+
+    const moved = moveHoldBooking({
+      booking: holdBooking,
+      newCourtId: padelCourt2Id,
+      localDate: "2026-11-12",
+      localStartTime: "21:00",
+      referenceTime: referenceNow,
+      existingBookings: [holdBooking, conflicting],
+    });
+
+    expect(moved.status).toBe("HOLD");
+    expect(moved.court_id).toBe(padelCourt2Id);
+    expect(moved.starts_at).toBe("2026-11-13T02:00:00.000Z");
+    expect(moved.hold_expires_at).toBe(holdBooking.hold_expires_at);
+  });
+
+  it("cancels HOLD or CONFIRMED bookings with a mandatory reason", () => {
+    const referenceNow = "2026-11-12T18:00:00.000Z";
+    const holdBooking = createHoldBooking({
+      id: "hold-cancel-1",
+      tenantId: PILOT_SEED_TENANT_ID,
+      courtId: padelCourt1Id,
+      customerId,
+      localDate: "2026-11-12",
+      localStartTime: "19:00",
+      referenceTime: referenceNow,
+    });
+
+    expect(() =>
+      cancelBooking({
+        booking: holdBooking,
+        cancellationReason: "   ",
+        referenceTime: referenceNow,
+      }),
+    ).toThrowError(InvalidBookingTransitionError);
+
+    const cancelled = cancelBooking({
+      booking: holdBooking,
+      cancellationReason: "Lluvia fuerte en la cancha",
+      referenceTime: referenceNow,
+    });
+
+    expect(cancelled.status).toBe("CANCELLED");
+    expect(cancelled.cancellation_reason).toBe("Lluvia fuerte en la cancha");
   });
 });

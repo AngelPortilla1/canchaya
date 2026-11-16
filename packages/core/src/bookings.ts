@@ -14,7 +14,11 @@ import {
   localDateTimeToUtcIso,
   parseWallClockTimeMinutes,
 } from "./availability";
-import { assertBookingTransition, transitionBooking } from "./booking-state-machine";
+import {
+  assertBookingTransition,
+  InvalidBookingTransitionError,
+  transitionBooking,
+} from "./booking-state-machine";
 import {
   assertNoBookingOverlap,
   type BookingRecord,
@@ -655,4 +659,113 @@ export function rescheduleBooking(input: RescheduleBookingInput): RescheduleBook
     newBooking,
     payments: updatedPayments,
   };
+}
+
+export interface MoveHoldBookingInput {
+  booking: BookingRecord;
+  newCourtId?: string;
+  startsAtUtc?: string;
+  endsAtUtc?: string;
+  localDate?: string;
+  localStartTime?: string;
+  localEndTime?: string;
+  timezone?: string;
+  slotDurationMinutes?: number;
+  referenceTime?: string | Date;
+  existingBookings?: readonly BookingAvailabilityCandidate[];
+}
+
+/**
+ * Moves an active (non-expired) `HOLD` booking to another court/time slot in place,
+ * verifying that the target slot is not in the past and does not overlap any blocking booking.
+ */
+export function moveHoldBooking(input: MoveHoldBookingInput): BookingRecord {
+  const { booking, newCourtId, referenceTime, existingBookings = [] } = input;
+  const referenceDate = resolveReferenceDate(referenceTime);
+
+  if (booking.status !== "HOLD") {
+    throw new InvalidBookingTransitionError(
+      booking.status,
+      "HOLD",
+      "only HOLD bookings can be moved in place",
+    );
+  }
+
+  if (isHoldBookingExpired(booking, referenceDate)) {
+    throw new InvalidBookingTransitionError(
+      booking.status,
+      "HOLD",
+      "HOLD booking has already expired",
+    );
+  }
+
+  const targetCourtId = newCourtId !== undefined ? newCourtId.trim() : booking.court_id;
+  if (!targetCourtId || targetCourtId.length === 0) {
+    throw new Error("newCourtId must be a non-empty court ID");
+  }
+
+  const originalDurationMinutes = Math.round(
+    (Date.parse(booking.ends_at) - Date.parse(booking.starts_at)) / 60_000,
+  );
+  const fallbackSlotDuration =
+    Number.isInteger(originalDurationMinutes) && originalDurationMinutes > 0
+      ? originalDurationMinutes
+      : DEFAULT_SLOT_MINUTES;
+
+  const { startsAtUtc, endsAtUtc } = resolveBookingUtcSlot({
+    tenantId: booking.tenant_id,
+    courtId: targetCourtId,
+    customerId: booking.customer_id,
+    startsAtUtc: input.startsAtUtc,
+    endsAtUtc: input.endsAtUtc,
+    localDate: input.localDate,
+    localStartTime: input.localStartTime,
+    localEndTime: input.localEndTime,
+    timezone: input.timezone,
+    slotDurationMinutes: input.slotDurationMinutes ?? fallbackSlotDuration,
+  });
+
+  if (Date.parse(startsAtUtc) < referenceDate.getTime()) {
+    throw new ReschedulePolicyError(
+      "NEW_SLOT_IN_PAST",
+      "Moved booking slot starts_at cannot be in the past",
+    );
+  }
+
+  const activeBlockingBookings = existingBookings.filter(
+    (candidate) => candidate.id !== booking.id && isBookingBlockingAt(candidate, referenceDate),
+  );
+
+  assertNoBookingOverlap(activeBlockingBookings, {
+    id: booking.id,
+    tenant_id: booking.tenant_id,
+    court_id: targetCourtId,
+    status: "HOLD",
+    starts_at: startsAtUtc,
+    ends_at: endsAtUtc,
+  });
+
+  return {
+    ...booking,
+    court_id: targetCourtId,
+    starts_at: startsAtUtc,
+    ends_at: endsAtUtc,
+    updated_at: referenceDate.toISOString(),
+  };
+}
+
+export interface CancelBookingInput {
+  booking: BookingRecord;
+  cancellationReason: string;
+  referenceTime?: string | Date;
+}
+
+/**
+ * Cancels an active (`HOLD` or `CONFIRMED`) booking with a mandatory cancellation reason.
+ */
+export function cancelBooking(input: CancelBookingInput): BookingRecord {
+  return transitionBooking(input.booking, "CANCELLED", {
+    cancellationReason: input.cancellationReason,
+    referenceTime: input.referenceTime,
+  });
 }
