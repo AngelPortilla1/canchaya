@@ -211,7 +211,11 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
     return () => window.clearInterval(timer);
   }, []);
 
-  function openCellModal(court: CalendarCourtColumn, slot: CalendarTimeSlotRow, cell: CalendarCell) {
+  function openCellModal(
+    court: CalendarCourtColumn,
+    slot: CalendarTimeSlotRow,
+    cell: CalendarCell,
+  ) {
     setSuccessMessage(null);
     if (cell.booking) {
       setModalTarget({

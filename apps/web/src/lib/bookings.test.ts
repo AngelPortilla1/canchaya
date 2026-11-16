@@ -126,10 +126,9 @@ describe("apps/web manual booking operations (CY-037)", () => {
       }
       if (url.includes("/rest/v1/bookings") && method === "POST") {
         if (shouldSimulateDbExclusion) {
-          return new Response(
-            JSON.stringify({ code: "23P01", message: "conflicting key value" }),
-            { status: 409 },
-          );
+          return new Response(JSON.stringify({ code: "23P01", message: "conflicting key value" }), {
+            status: 409,
+          });
         }
         return new Response(init?.body as string, { status: 201 });
       }

@@ -8,10 +8,7 @@ import {
 import { BookingValidationError, moveManualBooking } from "@/lib/bookings";
 import { handlePanelApiError } from "@/lib/panel-api";
 
-export async function POST(
-  request: Request,
-  context: { params: Promise<{ id: string }> },
-) {
+export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const cookieStore = await cookies();
     const accessToken = cookieStore.get(ACCESS_TOKEN_COOKIE_NAME)?.value;

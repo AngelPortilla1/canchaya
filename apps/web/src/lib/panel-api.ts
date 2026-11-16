@@ -1,17 +1,10 @@
 import { InactiveOrMissingUserProfileError, RolePermissionDeniedError } from "@canchaya/core";
 import { NextResponse } from "next/server";
 import { UnauthenticatedError } from "./auth";
-import {
-  BookingConflictError,
-  BookingNotFoundError,
-  BookingValidationError,
-} from "./bookings";
+import { BookingConflictError, BookingNotFoundError, BookingValidationError } from "./bookings";
 
 export function handlePanelApiError(error: unknown, fallbackMessage: string): NextResponse {
-  if (
-    error instanceof UnauthenticatedError ||
-    error instanceof InactiveOrMissingUserProfileError
-  ) {
+  if (error instanceof UnauthenticatedError || error instanceof InactiveOrMissingUserProfileError) {
     return NextResponse.json(
       { error: "Tu sesión expiró o no es válida. Inicia sesión nuevamente." },
       { status: 401 },

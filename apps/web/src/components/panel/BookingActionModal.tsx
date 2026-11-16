@@ -58,12 +58,7 @@ function getAvailableSlotsForCourt(
   return options;
 }
 
-export function BookingActionModal({
-  target,
-  grid,
-  onClose,
-  onSuccess,
-}: BookingActionModalProps) {
+export function BookingActionModal({ target, grid, onClose, onSuccess }: BookingActionModalProps) {
   const [subMode, setSubMode] = useState<"view" | "move" | "cancel">("view");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -556,8 +551,8 @@ export function BookingActionModal({
                 <strong className="text-white">{booking.status}</strong>
               </p>
               <p className="text-slate-300">
-                <span className="text-slate-400">Total:</span>{" "}
-                {formatCop(booking.totalPriceCop)} COP
+                <span className="text-slate-400">Total:</span> {formatCop(booking.totalPriceCop)}{" "}
+                COP
               </p>
               <p className="text-slate-300">
                 <span className="text-slate-400">Anticipo requerido:</span>{" "}
@@ -595,7 +590,10 @@ export function BookingActionModal({
             ) : null}
 
             {canModifyBooking && subMode === "move" ? (
-              <form onSubmit={handleMoveBooking} className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3.5">
+              <form
+                onSubmit={handleMoveBooking}
+                className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3.5"
+              >
                 <div className="flex items-center justify-between">
                   <h4 className="text-xs font-bold text-white">Mover a nuevo horario</h4>
                   <button
@@ -672,7 +670,10 @@ export function BookingActionModal({
             ) : null}
 
             {canModifyBooking && subMode === "cancel" ? (
-              <form onSubmit={handleCancelBooking} className="space-y-3 rounded-xl border border-rose-500/30 bg-rose-500/5 p-3.5">
+              <form
+                onSubmit={handleCancelBooking}
+                className="space-y-3 rounded-xl border border-rose-500/30 bg-rose-500/5 p-3.5"
+              >
                 <div className="flex items-center justify-between">
                   <h4 className="text-xs font-bold text-rose-200">Cancelar reserva</h4>
                   <button
