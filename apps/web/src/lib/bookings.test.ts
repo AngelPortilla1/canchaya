@@ -20,10 +20,8 @@ const ENV = {
 
 const USER: AuthenticatedTenantUserContext = {
   userId: "user-staff-1",
-  email: "staff@canchaya.co",
   tenantId: "tenant-1",
   role: "staff",
-  fullName: "Staff Piloto",
   isActive: true,
 };
 
@@ -197,12 +195,14 @@ describe("apps/web manual booking operations (CY-037)", () => {
       booking_id: "booking-confirmed-1",
       payment_type: "deposit",
       method: "transfer",
-      amount_cop: 12000,
       status: "approved",
-      proof_url: null,
+      amount_cop: 12000,
+      cash_amount_cop: 0,
+      transfer_amount_cop: 12000,
+      receipt_media_url: null,
       validated_by_user_id: "user-staff-1",
       validated_at: "2026-11-10T15:00:00.000Z",
-      notes: null,
+      rejection_reason: null,
       created_at: "2026-11-10T15:00:00.000Z",
       updated_at: "2026-11-10T15:00:00.000Z",
     };
