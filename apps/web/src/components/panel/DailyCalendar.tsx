@@ -12,18 +12,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import type { TenantCalendarResponse } from "@/lib/calendar";
+import { BookingActionModal, type BookingModalTarget } from "./BookingActionModal";
 
 type SportFilter = "all" | SportCode;
 
 interface DailyCalendarProps {
   initialData: TenantCalendarResponse;
   todayLocalDate: string;
-}
-
-interface SelectedCellInfo {
-  court: CalendarCourtColumn;
-  slot: CalendarTimeSlotRow;
-  cell: CalendarCell;
 }
 
 function formatCop(amount: number): string {
@@ -205,7 +200,8 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
   const [mobileSport, setMobileSport] = useState<SportCode>("padel");
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [selectedCell, setSelectedCell] = useState<SelectedCellInfo | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [modalTarget, setModalTarget] = useState<BookingModalTarget | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   useEffect(() => {
@@ -215,9 +211,32 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
     return () => window.clearInterval(timer);
   }, []);
 
+  function openCellModal(court: CalendarCourtColumn, slot: CalendarTimeSlotRow, cell: CalendarCell) {
+    setSuccessMessage(null);
+    if (cell.booking) {
+      setModalTarget({
+        mode: "detail",
+        court,
+        slot,
+        booking: cell.booking,
+        visualState: cell.visualState,
+        priceCop: cell.priceCop,
+      });
+      return;
+    }
+    if (cell.visualState === "FREE") {
+      setModalTarget({
+        mode: "create",
+        court,
+        slot,
+        priceCop: cell.priceCop,
+      });
+    }
+  }
+
   async function loadDate(nextDate: string) {
     setSelectedDate(nextDate);
-    setSelectedCell(null);
+    setModalTarget(null);
     setIsLoading(true);
     setErrorMessage(null);
 
@@ -314,6 +333,16 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setSuccessMessage(null);
+                setModalTarget({ mode: "create" });
+              }}
+              className="hidden rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-500 sm:inline-flex"
+            >
+              + Nueva reserva
+            </button>
             {data.userRole === "owner" ? (
               <span
                 title="Disponible en CY-040"
@@ -539,7 +568,7 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
                             key={court.id}
                             cell={cell}
                             nowMs={nowMs}
-                            onSelect={() => setSelectedCell({ court, slot, cell })}
+                            onSelect={() => openCellModal(court, slot, cell)}
                           />
                         );
                       })}
@@ -586,7 +615,7 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
                             key={court.id}
                             cell={cell}
                             nowMs={nowMs}
-                            onSelect={() => setSelectedCell({ court, slot, cell })}
+                            onSelect={() => openCellModal(court, slot, cell)}
                           />
                         );
                       })}
@@ -638,69 +667,21 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
         </div>
       </main>
 
-      {/* Cell Detail Drawer / Sheet (Read-only preview until CY-037) */}
-      {selectedCell ? (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="fixed inset-0 z-40 flex items-end justify-center bg-black/60 p-0 sm:items-center sm:p-4"
-          onClick={() => setSelectedCell(null)}
-        >
-          <div
-            className="w-full max-w-md rounded-t-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl sm:rounded-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-medium text-emerald-400">{selectedCell.court.name}</p>
-                <h3 className="text-lg font-bold text-white">
-                  {selectedCell.slot.localStartTime} – {selectedCell.slot.localEndTime}
-                </h3>
-                <p className="text-xs text-slate-400">{displayDate}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedCell(null)}
-                className="rounded-lg border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800"
-              >
-                ✕ Cerrar
-              </button>
-            </div>
+      {/* Booking Create / Move / Cancel Modal */}
+      <BookingActionModal
+        target={modalTarget}
+        grid={grid}
+        onClose={() => setModalTarget(null)}
+        onSuccess={(message) => {
+          setModalTarget(null);
+          setSuccessMessage(message);
+          void loadDate(selectedDate);
+        }}
+      />
 
-            {selectedCell.cell.booking ? (
-              <div className="mt-4 space-y-2 rounded-xl border border-slate-800 bg-slate-950/60 p-4 text-sm">
-                <p className="text-slate-300">
-                  <span className="text-slate-400">Cliente:</span>{" "}
-                  <strong className="text-white">
-                    {selectedCell.cell.booking.customerName ?? "Cliente WhatsApp"}
-                  </strong>
-                </p>
-                <p className="text-slate-300">
-                  <span className="text-slate-400">Estado:</span>{" "}
-                  <strong className="text-white">{selectedCell.cell.visualState}</strong>
-                </p>
-                <p className="text-slate-300">
-                  <span className="text-slate-400">Total:</span>{" "}
-                  {formatCop(selectedCell.cell.booking.totalPriceCop)} COP
-                </p>
-                <p className="text-slate-300">
-                  <span className="text-slate-400">Anticipo requerido:</span>{" "}
-                  {formatCop(selectedCell.cell.booking.depositRequiredCop)} COP
-                </p>
-                <p className="text-slate-300">
-                  <span className="text-slate-400">Saldo pendiente:</span>{" "}
-                  {formatCop(selectedCell.cell.booking.balanceDueCop)} COP
-                </p>
-              </div>
-            ) : (
-              <div className="mt-4 rounded-xl border border-dashed border-slate-700 bg-slate-950/40 p-4 text-sm text-slate-300">
-                Franja libre · Tarifa base: {formatCop(selectedCell.cell.priceCop)} COP.
-                <p className="mt-1 text-xs text-slate-400">
-                  La creación y edición manual de reservas se habilitará en CY-037.
-                </p>
-              </div>
-            )}
-          </div>
+      {successMessage ? (
+        <div className="fixed bottom-20 right-4 z-30 rounded-xl border border-emerald-500/40 bg-emerald-950/95 px-4 py-2.5 text-xs font-medium text-emerald-200 shadow-lg lg:bottom-6">
+          {successMessage}
         </div>
       ) : null}
 
@@ -718,10 +699,17 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
             <span>🧾</span>
             <span>Pendientes ({grid.pendingValidationCount})</span>
           </div>
-          <div className="flex flex-col items-center justify-center gap-0.5 py-2.5 text-slate-400">
+          <button
+            type="button"
+            onClick={() => {
+              setSuccessMessage(null);
+              setModalTarget({ mode: "create" });
+            }}
+            className="flex flex-col items-center justify-center gap-0.5 py-2.5 text-emerald-300 hover:text-emerald-200"
+          >
             <span>➕</span>
             <span>Nueva</span>
-          </div>
+          </button>
         </div>
       </nav>
     </div>
