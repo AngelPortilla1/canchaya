@@ -8,17 +8,20 @@ import {
   type SportCode,
   shiftLocalDate,
 } from "@canchaya/core";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import type { PendingDepositQueueItem } from "@/lib/bookings";
 import type { TenantCalendarResponse } from "@/lib/calendar";
 import { BookingActionModal, type BookingModalTarget } from "./BookingActionModal";
+import { PendingDepositsQueue } from "./PendingDepositsQueue";
 
 type SportFilter = "all" | SportCode;
+type MobileTab = "calendar" | "queue";
 
 interface DailyCalendarProps {
   initialData: TenantCalendarResponse;
   todayLocalDate: string;
+  initialPendingDeposits?: PendingDepositQueueItem[];
 }
 
 function formatCop(amount: number): string {
@@ -192,9 +195,17 @@ function CalendarCellCard({
   );
 }
 
-export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProps) {
+export function DailyCalendar({
+  initialData,
+  todayLocalDate,
+  initialPendingDeposits = [],
+}: DailyCalendarProps) {
   const router = useRouter();
   const [data, setData] = useState<TenantCalendarResponse>(initialData);
+  const [pendingDeposits, setPendingDeposits] =
+    useState<PendingDepositQueueItem[]>(initialPendingDeposits);
+  const [isLoadingDeposits, setIsLoadingDeposits] = useState<boolean>(false);
+  const [mobileTab, setMobileTab] = useState<MobileTab>("calendar");
   const [selectedDate, setSelectedDate] = useState<string>(initialData.grid.localDate);
   const [sportFilter, setSportFilter] = useState<SportFilter>("all");
   const [mobileSport, setMobileSport] = useState<SportCode>("padel");
@@ -238,6 +249,25 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
     }
   }
 
+  async function loadPendingDeposits() {
+    setIsLoadingDeposits(true);
+    try {
+      const response = await fetch("/api/panel/deposits", {
+        method: "GET",
+        cache: "no-store",
+      });
+      if (!response.ok) return;
+      const payload = (await response.json()) as { deposits?: PendingDepositQueueItem[] };
+      if (Array.isArray(payload.deposits)) {
+        setPendingDeposits(payload.deposits);
+      }
+    } catch {
+      // Keep current queue on transient error
+    } finally {
+      setIsLoadingDeposits(false);
+    }
+  }
+
   async function loadDate(nextDate: string) {
     setSelectedDate(nextDate);
     setModalTarget(null);
@@ -245,10 +275,13 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
     setErrorMessage(null);
 
     try {
-      const response = await fetch(`/api/panel/calendar?date=${encodeURIComponent(nextDate)}`, {
-        method: "GET",
-        cache: "no-store",
-      });
+      const [response] = await Promise.all([
+        fetch(`/api/panel/calendar?date=${encodeURIComponent(nextDate)}`, {
+          method: "GET",
+          cache: "no-store",
+        }),
+        loadPendingDeposits(),
+      ]);
 
       if (response.status === 401) {
         router.push("/login");
@@ -290,31 +323,7 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
     return grid.courts.filter((c) => c.sportCode === sportFilter);
   }, [grid.courts, sportFilter, mobileSport]);
 
-  const pendingItems = useMemo(() => {
-    const items: Array<{
-      bookingId: string;
-      courtName: string;
-      localStartTime: string;
-      customerName: string;
-      depositCop: number;
-    }> = [];
-
-    for (const slot of grid.slots) {
-      for (const court of grid.courts) {
-        const cell = slot.cellsByCourtId[court.id];
-        if (cell?.visualState === "PENDING_VALIDATION" && cell.booking) {
-          items.push({
-            bookingId: cell.booking.id,
-            courtName: court.name,
-            localStartTime: slot.localStartTime,
-            customerName: cell.booking.customerName ?? "Cliente WhatsApp",
-            depositCop: cell.booking.depositRequiredCop,
-          });
-        }
-      }
-    }
-    return items;
-  }, [grid]);
+  const totalPendingCount = Math.max(pendingDeposits.length, grid.pendingValidationCount);
 
   const isToday = selectedDate === todayLocalDate;
   const displayDate = formatDisplayDateEs(selectedDate, grid.timezone);
@@ -513,7 +522,7 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
             ⏳ HOLD (15 min)
           </span>
           <span className="rounded-md border border-violet-500/40 bg-violet-500/15 px-2 py-0.5 text-violet-200">
-            🧾 Por validar ({grid.pendingValidationCount})
+            🧾 Por validar ({totalPendingCount})
           </span>
           <span className="rounded-md border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-emerald-200">
             ✓ Confirmada
@@ -526,9 +535,28 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
           </span>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
+        <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
+          {/* Mobile Queue View when tab === 'queue' */}
+          {mobileTab === "queue" ? (
+            <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 lg:hidden">
+              <PendingDepositsQueue
+                items={pendingDeposits}
+                isLoading={isLoadingDeposits}
+                onRefresh={() => void loadPendingDeposits()}
+                onValidated={(message) => {
+                  setSuccessMessage(message);
+                  void loadDate(selectedDate);
+                }}
+              />
+            </section>
+          ) : null}
+
           {/* Calendar Grid */}
-          <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-3 sm:p-4">
+          <section
+            className={`rounded-2xl border border-slate-800 bg-slate-900/40 p-3 sm:p-4 ${
+              mobileTab === "queue" ? "hidden lg:block" : ""
+            }`}
+          >
             {grid.isClosed ? (
               <div className="py-12 text-center">
                 <p className="text-base font-semibold text-white">Recinto cerrado este día</p>
@@ -630,51 +658,28 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
             )}
           </section>
 
-          {/* Desktop Right Sidebar: Pending Queue Summary */}
+          {/* Desktop Right Sidebar: Pending Queue */}
           <aside className="hidden space-y-3 lg:block">
             <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-bold text-white">
-                  🧾 Pendientes ({pendingItems.length})
-                </h2>
-                <span className="text-[11px] text-slate-400">Día actual</span>
-              </div>
-
-              {pendingItems.length === 0 ? (
-                <p className="mt-3 text-xs text-slate-400">
-                  No hay comprobantes pendientes por validar en esta fecha.
-                </p>
-              ) : (
-                <ul className="mt-3 space-y-2.5">
-                  {pendingItems.map((item) => (
-                    <li
-                      key={item.bookingId}
-                      className="rounded-xl border border-violet-500/30 bg-violet-500/10 p-3 text-xs"
-                    >
-                      <p className="font-semibold text-white">{item.customerName}</p>
-                      <p className="mt-0.5 text-violet-200/90">
-                        {item.courtName} · {item.localStartTime}
-                      </p>
-                      <p className="mt-1 font-medium text-violet-300">
-                        Anticipo: {formatCop(item.depositCop)} COP
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-
-              <p className="mt-4 border-t border-slate-800 pt-3 text-[11px] text-slate-400">
-                La aprobación en 1 toque se habilitará en el módulo de pendientes (CY-038).
-              </p>
+              <PendingDepositsQueue
+                items={pendingDeposits}
+                isLoading={isLoadingDeposits}
+                onRefresh={() => void loadPendingDeposits()}
+                onValidated={(message) => {
+                  setSuccessMessage(message);
+                  void loadDate(selectedDate);
+                }}
+              />
             </div>
           </aside>
         </div>
       </main>
 
-      {/* Booking Create / Move / Cancel Modal */}
+      {/* Booking Create / Move / Cancel / Deposit Validation Modal */}
       <BookingActionModal
         target={modalTarget}
         grid={grid}
+        pendingDeposits={pendingDeposits}
         onClose={() => setModalTarget(null)}
         onSuccess={(message) => {
           setModalTarget(null);
@@ -692,17 +697,30 @@ export function DailyCalendar({ initialData, todayLocalDate }: DailyCalendarProp
       {/* Mobile Bottom Navigation */}
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-800 bg-slate-950/95 backdrop-blur lg:hidden">
         <div className="mx-auto grid max-w-md grid-cols-3 text-xs font-medium">
-          <Link
-            href="/panel"
-            className="flex flex-col items-center justify-center gap-0.5 py-2.5 text-emerald-400"
+          <button
+            type="button"
+            onClick={() => setMobileTab("calendar")}
+            className={`flex flex-col items-center justify-center gap-0.5 py-2.5 ${
+              mobileTab === "calendar" ? "text-emerald-400" : "text-slate-400"
+            }`}
           >
             <span>📅</span>
             <span>Calendario</span>
-          </Link>
-          <div className="flex flex-col items-center justify-center gap-0.5 py-2.5 text-slate-400">
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileTab("queue")}
+            className={`flex flex-col items-center justify-center gap-0.5 py-2.5 ${
+              mobileTab === "queue"
+                ? "text-violet-300"
+                : totalPendingCount > 0
+                  ? "text-violet-200"
+                  : "text-slate-400"
+            }`}
+          >
             <span>🧾</span>
-            <span>Pendientes ({grid.pendingValidationCount})</span>
-          </div>
+            <span>Pendientes ({totalPendingCount})</span>
+          </button>
           <button
             type="button"
             onClick={() => {

@@ -7,7 +7,9 @@ import type {
   DailyCalendarGrid,
 } from "@canchaya/core";
 import { useEffect, useMemo, useState } from "react";
+import type { PendingDepositQueueItem } from "@/lib/bookings";
 import type { TenantCalendarResponse } from "@/lib/calendar";
+import { PendingDepositsQueue } from "./PendingDepositsQueue";
 
 interface CustomerOption {
   id: string;
@@ -27,9 +29,16 @@ export interface BookingModalTarget {
 interface BookingActionModalProps {
   target: BookingModalTarget | null;
   grid: DailyCalendarGrid;
+  pendingDeposits?: PendingDepositQueueItem[];
   onClose: () => void;
   onSuccess: (message: string) => void;
 }
+
+const QUICK_RECEIPT_PRESETS = [
+  "Comprobante Nequi $12.000",
+  "Transferencia Bancolombia $12.000",
+  "Transferencia Bre-B / Daviplata $12.000",
+] as const;
 
 const QUICK_CANCEL_REASONS = [
   "Lluvia o mal clima",
@@ -58,10 +67,17 @@ function getAvailableSlotsForCourt(
   return options;
 }
 
-export function BookingActionModal({ target, grid, onClose, onSuccess }: BookingActionModalProps) {
+export function BookingActionModal({
+  target,
+  grid,
+  pendingDeposits = [],
+  onClose,
+  onSuccess,
+}: BookingActionModalProps) {
   const [subMode, setSubMode] = useState<"view" | "move" | "cancel">("view");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [receiptMediaUrl, setReceiptMediaUrl] = useState("");
 
   // Shared date / court / time selection for Create or Move
   const [targetDate, setTargetDate] = useState(grid.localDate);
@@ -93,6 +109,7 @@ export function BookingActionModal({ target, grid, onClose, onSuccess }: Booking
     setTargetGrid(grid);
     setNotes("");
     setCancellationReason("");
+    setReceiptMediaUrl("");
     setSelectedCustomer(null);
     setCustomerQuery("");
     setShowNewCustomerForm(false);
@@ -338,6 +355,62 @@ export function BookingActionModal({ target, grid, onClose, onSuccess }: Booking
   const booking = target.booking;
   const canModifyBooking =
     booking !== undefined && (booking.status === "HOLD" || booking.status === "CONFIRMED");
+  const matchingPendingDeposit = booking
+    ? pendingDeposits.find((d) => d.bookingId === booking.id)
+    : undefined;
+
+  const handleRegisterReceipt = async (approveImmediately: boolean) => {
+    if (!booking) return;
+    const trimmedReceipt = receiptMediaUrl.trim();
+    if (!trimmedReceipt) {
+      setErrorMessage("Selecciona o escribe la referencia/URL del comprobante recibido.");
+      return;
+    }
+
+    setErrorMessage(null);
+    setIsSubmitting(true);
+    try {
+      const res = await fetch("/api/panel/deposits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bookingId: booking.id,
+          receiptMediaUrl: trimmedReceipt,
+          amountCop: booking.depositRequiredCop,
+          method: "transfer",
+        }),
+      });
+      const payload = (await res.json()) as {
+        payment?: { id: string };
+        error?: string;
+      };
+      if (!res.ok || !payload.payment) {
+        setErrorMessage(payload.error ?? "No se pudo registrar el comprobante.");
+        return;
+      }
+
+      if (approveImmediately) {
+        const approveRes = await fetch(`/api/panel/deposits/${payload.payment.id}/approve`, {
+          method: "POST",
+        });
+        const approvePayload = (await approveRes.json().catch(() => ({}))) as { error?: string };
+        if (!approveRes.ok) {
+          setErrorMessage(approvePayload.error ?? "Se registró el comprobante pero no se pudo aprobar.");
+          return;
+        }
+        onSuccess(
+          `Anticipo aprobado y reserva confirmada — ${booking.customerName ?? "Cliente"}`,
+        );
+        return;
+      }
+
+      onSuccess("Comprobante registrado en la cola de anticipos por validar.");
+    } catch {
+      setErrorMessage("Error de conexión al registrar el comprobante.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   return (
     <div
@@ -563,6 +636,69 @@ export function BookingActionModal({ target, grid, onClose, onSuccess }: Booking
                 {formatCop(booking.balanceDueCop)} COP
               </p>
             </div>
+
+            {booking.status === "HOLD" && subMode === "view" ? (
+              matchingPendingDeposit ? (
+                <div className="rounded-xl border border-violet-500/40 bg-slate-950/60 p-3">
+                  <PendingDepositsQueue
+                    items={[matchingPendingDeposit]}
+                    onRefresh={() => {}}
+                    onValidated={(msg) => onSuccess(msg)}
+                  />
+                </div>
+              ) : (
+                <div className="space-y-2.5 rounded-xl border border-violet-500/30 bg-violet-500/10 p-3.5">
+                  <div>
+                    <h4 className="text-xs font-bold text-violet-200">
+                      🧾 Registrar comprobante de anticipo ({formatCop(booking.depositRequiredCop)} COP)
+                    </h4>
+                    <p className="text-[11px] text-slate-300">
+                      Registra el comprobante enviado por el cliente para proteger la reserva o aprobarla de una vez.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5">
+                    {QUICK_RECEIPT_PRESETS.map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setReceiptMediaUrl(preset)}
+                        className="rounded-lg border border-violet-400/40 bg-slate-900 px-2.5 py-1 text-[11px] text-violet-200 hover:bg-violet-500/20"
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+
+                  <input
+                    type="text"
+                    value={receiptMediaUrl}
+                    onChange={(e) => setReceiptMediaUrl(e.target.value)}
+                    placeholder="URL de imagen o referencia Nequi / Bancolombia..."
+                    className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white"
+                  />
+
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      disabled={isSubmitting || receiptMediaUrl.trim().length === 0}
+                      onClick={() => handleRegisterReceipt(false)}
+                      className="rounded-xl border border-violet-400/40 bg-violet-500/20 px-3 py-2 text-xs font-semibold text-violet-100 hover:bg-violet-500/30 disabled:opacity-50"
+                    >
+                      🧾 Enviar a cola por validar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSubmitting || receiptMediaUrl.trim().length === 0}
+                      onClick={() => handleRegisterReceipt(true)}
+                      className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-500 disabled:opacity-50"
+                    >
+                      ✓ Registrar y aprobar 1 toque
+                    </button>
+                  </div>
+                </div>
+              )
+            ) : null}
 
             {canModifyBooking && subMode === "view" ? (
               <div className="grid grid-cols-2 gap-2.5">
