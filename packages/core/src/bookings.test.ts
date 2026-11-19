@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  approveDepositPayment,
   assertCanRescheduleBooking,
   assertNoBookingOverlap,
   BookingOverlapError,
@@ -9,6 +10,7 @@ import {
   createHoldBooking,
   DEFAULT_MIN_RESCHEDULE_HOURS,
   DEFAULT_PILOT_OPERATING_HOURS,
+  DepositValidationError,
   expireOverdueHoldBookings,
   getAvailableSlotsBySportAndDate,
   HOLD_EXPIRED_CANCELLATION_REASON,
@@ -18,8 +20,11 @@ import {
   PILOT_SEED_COURTS,
   PILOT_SEED_TENANT_ID,
   POSTGRES_EXCLUSION_VIOLATION_CODE,
+  QUICK_DEPOSIT_REJECTION_REASONS,
+  rejectDepositPayment,
   rescheduleBooking,
   ReschedulePolicyError,
+  submitDepositReceipt,
   type BookingAvailabilityCandidate,
   type BookingRecord,
   type CourtAvailabilityItem,
@@ -750,5 +755,126 @@ describe("Manual panel booking operations (CY-037)", () => {
 
     expect(cancelled.status).toBe("CANCELLED");
     expect(cancelled.cancellation_reason).toBe("Lluvia fuerte en la cancha");
+  });
+});
+
+describe("Deposit receipt validation queue: approve and reject in 1 touch (CY-038)", () => {
+  it("submits a deposit receipt in pending_validation status and approves it to confirm the booking", () => {
+    const createdAt = "2026-11-12T18:00:00.000Z";
+    const validatedAt = "2026-11-12T18:04:00.000Z";
+
+    const holdBooking = createHoldBooking({
+      id: "booking-deposit-1",
+      tenantId: PILOT_SEED_TENANT_ID,
+      courtId: padelCourt1Id,
+      customerId,
+      localDate: "2026-11-12",
+      localStartTime: "19:00",
+      referenceTime: createdAt,
+    });
+
+    const pendingPayment = submitDepositReceipt({
+      id: "payment-deposit-1",
+      booking: holdBooking,
+      receiptMediaUrl: "https://cdn.example.com/comprobantes/nequi-12000.jpg",
+      referenceTime: "2026-11-12T18:02:00.000Z",
+    });
+
+    expect(pendingPayment.status).toBe("pending_validation");
+    expect(pendingPayment.payment_type).toBe("deposit");
+    expect(pendingPayment.method).toBe("transfer");
+    expect(pendingPayment.amount_cop).toBe(12000);
+    expect(pendingPayment.transfer_amount_cop).toBe(12000);
+    expect(pendingPayment.cash_amount_cop).toBe(0);
+
+    const approved = approveDepositPayment({
+      booking: holdBooking,
+      payment: pendingPayment,
+      validatedByUserId: "user-staff-1",
+      referenceTime: validatedAt,
+    });
+
+    expect(approved.payment.status).toBe("approved");
+    expect(approved.payment.validated_by_user_id).toBe("user-staff-1");
+    expect(approved.payment.validated_at).toBe(validatedAt);
+    expect(approved.booking.status).toBe("CONFIRMED");
+    expect(approved.booking.hold_expires_at).toBeNull();
+    expect(approved.booking.balance_due_cop).toBe(48000);
+  });
+
+  it("rejects a deposit receipt with a mandatory reason and keeps HOLD active if not yet expired", () => {
+    const createdAt = "2026-11-12T18:00:00.000Z";
+    const holdBooking = createHoldBooking({
+      id: "booking-deposit-2",
+      tenantId: PILOT_SEED_TENANT_ID,
+      courtId: padelCourt1Id,
+      customerId,
+      localDate: "2026-11-12",
+      localStartTime: "20:00",
+      referenceTime: createdAt,
+    });
+
+    const pendingPayment = submitDepositReceipt({
+      id: "payment-deposit-2",
+      booking: holdBooking,
+      receiptMediaUrl: "https://cdn.example.com/comprobantes/borroso.jpg",
+      referenceTime: "2026-11-12T18:03:00.000Z",
+    });
+
+    expect(() =>
+      rejectDepositPayment({
+        booking: holdBooking,
+        payment: pendingPayment,
+        validatedByUserId: "user-staff-1",
+        rejectionReason: "   ",
+        referenceTime: "2026-11-12T18:05:00.000Z",
+      }),
+    ).toThrowError(DepositValidationError);
+
+    const rejectedWhileActive = rejectDepositPayment({
+      booking: holdBooking,
+      payment: pendingPayment,
+      validatedByUserId: "user-staff-1",
+      rejectionReason: QUICK_DEPOSIT_REJECTION_REASONS[1],
+      referenceTime: "2026-11-12T18:05:00.000Z",
+    });
+
+    expect(rejectedWhileActive.payment.status).toBe("rejected");
+    expect(rejectedWhileActive.payment.rejection_reason).toBe("Imagen borrosa / no abre");
+    expect(rejectedWhileActive.booking.status).toBe("HOLD");
+    expect(rejectedWhileActive.bookingExpired).toBe(false);
+  });
+
+  it("automatically expires the HOLD booking to CANCELLED if rejected after hold_expires_at has passed", () => {
+    const createdAt = "2026-11-12T18:00:00.000Z";
+    const holdBooking = createHoldBooking({
+      id: "booking-deposit-3",
+      tenantId: PILOT_SEED_TENANT_ID,
+      courtId: padelCourt2Id,
+      customerId,
+      localDate: "2026-11-12",
+      localStartTime: "21:00",
+      referenceTime: createdAt,
+    });
+
+    const pendingPayment = submitDepositReceipt({
+      id: "payment-deposit-3",
+      booking: holdBooking,
+      receiptMediaUrl: "https://cdn.example.com/comprobantes/invalido.jpg",
+      referenceTime: "2026-11-12T18:10:00.000Z",
+    });
+
+    const rejectedAfterExpiry = rejectDepositPayment({
+      booking: holdBooking,
+      payment: pendingPayment,
+      validatedByUserId: "user-staff-1",
+      rejectionReason: QUICK_DEPOSIT_REJECTION_REASONS[2],
+      referenceTime: "2026-11-12T18:20:00.000Z",
+    });
+
+    expect(rejectedAfterExpiry.payment.status).toBe("rejected");
+    expect(rejectedAfterExpiry.bookingExpired).toBe(true);
+    expect(rejectedAfterExpiry.booking.status).toBe("CANCELLED");
+    expect(rejectedAfterExpiry.booking.cancellation_reason).toBe(HOLD_EXPIRED_CANCELLATION_REASON);
   });
 });
