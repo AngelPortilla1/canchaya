@@ -44,11 +44,7 @@ export async function POST(request: Request) {
       method?: unknown;
     } | null;
 
-    if (
-      !body ||
-      typeof body.bookingId !== "string" ||
-      typeof body.receiptMediaUrl !== "string"
-    ) {
+    if (!body || typeof body.bookingId !== "string" || typeof body.receiptMediaUrl !== "string") {
       throw new BookingValidationError(
         "Faltan datos obligatorios para registrar el comprobante (reserva y URL o referencia).",
       );
@@ -58,8 +54,7 @@ export async function POST(request: Request) {
       typeof body.amountCop === "number" && Number.isInteger(body.amountCop)
         ? body.amountCop
         : undefined;
-    const method =
-      body.method === "cash" || body.method === "transfer" ? body.method : undefined;
+    const method = body.method === "cash" || body.method === "transfer" ? body.method : undefined;
 
     const payment = await registerManualDepositReceipt({
       user,

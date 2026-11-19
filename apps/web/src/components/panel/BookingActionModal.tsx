@@ -395,12 +395,12 @@ export function BookingActionModal({
         });
         const approvePayload = (await approveRes.json().catch(() => ({}))) as { error?: string };
         if (!approveRes.ok) {
-          setErrorMessage(approvePayload.error ?? "Se registró el comprobante pero no se pudo aprobar.");
+          setErrorMessage(
+            approvePayload.error ?? "Se registró el comprobante pero no se pudo aprobar.",
+          );
           return;
         }
-        onSuccess(
-          `Anticipo aprobado y reserva confirmada — ${booking.customerName ?? "Cliente"}`,
-        );
+        onSuccess(`Anticipo aprobado y reserva confirmada — ${booking.customerName ?? "Cliente"}`);
         return;
       }
 
@@ -650,10 +650,12 @@ export function BookingActionModal({
                 <div className="space-y-2.5 rounded-xl border border-violet-500/30 bg-violet-500/10 p-3.5">
                   <div>
                     <h4 className="text-xs font-bold text-violet-200">
-                      🧾 Registrar comprobante de anticipo ({formatCop(booking.depositRequiredCop)} COP)
+                      🧾 Registrar comprobante de anticipo ({formatCop(booking.depositRequiredCop)}{" "}
+                      COP)
                     </h4>
                     <p className="text-[11px] text-slate-300">
-                      Registra el comprobante enviado por el cliente para proteger la reserva o aprobarla de una vez.
+                      Registra el comprobante enviado por el cliente para proteger la reserva o
+                      aprobarla de una vez.
                     </p>
                   </div>
 
