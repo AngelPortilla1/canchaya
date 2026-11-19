@@ -1,20 +1,30 @@
 import {
+  type ApproveDepositPaymentResult,
   type AuthenticatedTenantUserContext,
   type BookingAvailabilityCandidate,
   BookingOverlapError,
   type BookingRecord,
+  type BookingStatus,
   DEFAULT_HOURLY_PRICE_COP,
   DEFAULT_SLOT_MINUTES,
   DEFAULT_TIMEZONE,
+  DepositValidationError,
   InvalidBookingTransitionError,
   POSTGRES_EXCLUSION_VIOLATION_CODE,
+  type PaymentMethod,
   type PaymentRecord,
+  type RejectDepositPaymentResult,
   ReschedulePolicyError,
+  type SportCode,
+  approveDepositPayment,
   cancelBooking,
   createHoldBooking,
+  formatLocalDateInTimezone,
   localDateTimeToUtcIso,
   moveHoldBooking,
+  rejectDepositPayment,
   rescheduleBooking,
+  submitDepositReceipt,
 } from "@canchaya/core";
 import { getPublicSupabaseEnv } from "./env";
 
@@ -190,6 +200,21 @@ function mapDomainError(error: unknown): never {
     throw new BookingValidationError(
       `No se puede realizar esta acción sobre una reserva en estado ${error.from}.`,
     );
+  }
+  if (error instanceof DepositValidationError) {
+    if (error.code === "REJECTION_REASON_REQUIRED") {
+      throw new BookingValidationError("Debes indicar un motivo para rechazar el comprobante.");
+    }
+    if (error.code === "RECEIPT_URL_REQUIRED") {
+      throw new BookingValidationError("Debes adjuntar o indicar la referencia del comprobante.");
+    }
+    if (error.code === "PAYMENT_NOT_PENDING") {
+      throw new BookingConflictError("Este anticipo ya fue procesado anteriormente.");
+    }
+    if (error.code === "INVALID_DEPOSIT_AMOUNT") {
+      throw new BookingValidationError("El monto del anticipo en COP no es válido.");
+    }
+    throw new BookingValidationError(error.message);
   }
   throw error;
 }
@@ -765,4 +790,580 @@ export async function cancelManualBooking(params: {
   });
 
   return updated[0] ?? cancelled;
+}
+
+export interface PendingDepositQueueItem {
+  paymentId: string;
+  bookingId: string;
+  tenantId: string;
+  courtId: string;
+  courtName: string;
+  sportCode: SportCode;
+  customerId: string;
+  customerName: string;
+  customerPhone: string;
+  startsAtUtc: string;
+  endsAtUtc: string;
+  localDate: string;
+  localStartTime: string;
+  localEndTime: string;
+  totalPriceCop: number;
+  depositRequiredCop: number;
+  amountCop: number;
+  method: PaymentMethod;
+  receiptMediaUrl: string | null;
+  createdAtUtc: string;
+}
+
+interface PendingDepositQueryRow {
+  id: string;
+  tenant_id: string;
+  booking_id: string;
+  payment_type: string;
+  method: PaymentMethod;
+  status: string;
+  amount_cop: number;
+  receipt_media_url: string | null;
+  created_at: string;
+  booking?:
+    | {
+        id: string;
+        court_id: string;
+        customer_id: string;
+        status: BookingStatus;
+        starts_at: string;
+        ends_at: string;
+        total_price_cop: number;
+        deposit_required_cop: number;
+        court?:
+          | {
+              id?: string;
+              name?: string | null;
+              sport?: { code?: SportCode } | Array<{ code?: SportCode }> | null;
+            }
+          | Array<{
+              id?: string;
+              name?: string | null;
+              sport?: { code?: SportCode } | Array<{ code?: SportCode }> | null;
+            }>
+          | null;
+        customer?:
+          | { id?: string; full_name?: string | null; phone?: string | null }
+          | Array<{ id?: string; full_name?: string | null; phone?: string | null }>
+          | null;
+      }
+    | Array<{
+        id: string;
+        court_id: string;
+        customer_id: string;
+        status: BookingStatus;
+        starts_at: string;
+        ends_at: string;
+        total_price_cop: number;
+        deposit_required_cop: number;
+        court?:
+          | {
+              id?: string;
+              name?: string | null;
+              sport?: { code?: SportCode } | Array<{ code?: SportCode }> | null;
+            }
+          | Array<{
+              id?: string;
+              name?: string | null;
+              sport?: { code?: SportCode } | Array<{ code?: SportCode }> | null;
+            }>
+          | null;
+        customer?:
+          | { id?: string; full_name?: string | null; phone?: string | null }
+          | Array<{ id?: string; full_name?: string | null; phone?: string | null }>
+          | null;
+      }>
+    | null;
+}
+
+function unwrapSingle<T>(value: T | T[] | null | undefined): T | null {
+  if (!value) return null;
+  return Array.isArray(value) ? (value[0] ?? null) : value;
+}
+
+function formatUtcAsLocalTime(utcIso: string, timezone: string): string {
+  const date = new Date(utcIso);
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: timezone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+
+  const hour = parts.find((p) => p.type === "hour")?.value ?? "00";
+  const minute = parts.find((p) => p.type === "minute")?.value ?? "00";
+  return `${hour === "24" ? "00" : hour}:${minute}`;
+}
+
+/**
+ * Lists all pending deposit payments (`status = 'pending_validation'`, `payment_type = 'deposit'`)
+ * for the authenticated user's tenant across all dates, ordered by arrival (`created_at ASC`).
+ */
+export async function listPendingDepositValidations(params: {
+  user: AuthenticatedTenantUserContext;
+  accessToken: string;
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
+}): Promise<PendingDepositQueueItem[]> {
+  const fetchImpl = params.fetchImpl ?? fetch;
+  const { supabaseUrl, supabaseAnonKey } = getPublicSupabaseEnv(params.env);
+
+  const [tenants, paymentRows] = await Promise.all([
+    supabaseRestRequest<Array<{ id: string; timezone: string }>>({
+      supabaseUrl,
+      supabaseAnonKey,
+      accessToken: params.accessToken,
+      method: "GET",
+      path: "tenants",
+      searchParams: {
+        select: "id,timezone",
+        id: `eq.${params.user.tenantId}`,
+        limit: "1",
+      },
+      fetchImpl,
+    }),
+    supabaseRestRequest<PendingDepositQueryRow[]>({
+      supabaseUrl,
+      supabaseAnonKey,
+      accessToken: params.accessToken,
+      method: "GET",
+      path: "payments",
+      searchParams: {
+        select:
+          "id,tenant_id,booking_id,payment_type,method,status,amount_cop,receipt_media_url,created_at,booking:bookings(id,court_id,customer_id,status,starts_at,ends_at,total_price_cop,deposit_required_cop,court:courts(id,name,sport:sports(code)),customer:customers(id,full_name,phone))",
+        tenant_id: `eq.${params.user.tenantId}`,
+        payment_type: "eq.deposit",
+        status: "eq.pending_validation",
+        order: "created_at.asc",
+      },
+      fetchImpl,
+    }),
+  ]);
+
+  const timezone = tenants[0]?.timezone || DEFAULT_TIMEZONE;
+  const items: PendingDepositQueueItem[] = [];
+
+  for (const row of paymentRows) {
+    const booking = unwrapSingle(row.booking);
+    if (!booking || booking.status !== "HOLD") {
+      continue;
+    }
+
+    const court = unwrapSingle(booking.court);
+    const sport = unwrapSingle(court?.sport);
+    const customer = unwrapSingle(booking.customer);
+
+    const localDate = formatLocalDateInTimezone(new Date(booking.starts_at), timezone);
+    const localStartTime = formatUtcAsLocalTime(booking.starts_at, timezone);
+    const localEndTimeRaw = formatUtcAsLocalTime(booking.ends_at, timezone);
+    const localEndTime =
+      localEndTimeRaw === "00:00" && localStartTime !== "00:00" ? "24:00" : localEndTimeRaw;
+
+    items.push({
+      paymentId: row.id,
+      bookingId: booking.id,
+      tenantId: row.tenant_id,
+      courtId: booking.court_id,
+      courtName: court?.name?.trim() || "Cancha",
+      sportCode: sport?.code === "futbol_5" ? "futbol_5" : "padel",
+      customerId: booking.customer_id,
+      customerName: customer?.full_name?.trim() || "Cliente WhatsApp",
+      customerPhone: customer?.phone?.trim() || "",
+      startsAtUtc: booking.starts_at,
+      endsAtUtc: booking.ends_at,
+      localDate,
+      localStartTime,
+      localEndTime,
+      totalPriceCop: booking.total_price_cop,
+      depositRequiredCop: booking.deposit_required_cop,
+      amountCop: row.amount_cop,
+      method: row.method,
+      receiptMediaUrl: row.receipt_media_url,
+      createdAtUtc: row.created_at,
+    });
+  }
+
+  return items;
+}
+
+/**
+ * Registers a deposit receipt (`status = 'pending_validation'`) for a `HOLD` booking so it enters
+ * the validation queue and is protected from automatic `HOLD` expiration (`CY-038`).
+ */
+export async function registerManualDepositReceipt(params: {
+  user: AuthenticatedTenantUserContext;
+  accessToken: string;
+  bookingId: string;
+  receiptMediaUrl: string;
+  amountCop?: number;
+  method?: Extract<PaymentMethod, "transfer" | "cash">;
+  referenceTime?: string | Date;
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
+}): Promise<PaymentRecord> {
+  const fetchImpl = params.fetchImpl ?? fetch;
+  const { supabaseUrl, supabaseAnonKey } = getPublicSupabaseEnv(params.env);
+  const referenceDate =
+    params.referenceTime !== undefined ? new Date(params.referenceTime) : new Date();
+
+  const [bookingRows, existingPending] = await Promise.all([
+    supabaseRestRequest<BookingRecord[]>({
+      supabaseUrl,
+      supabaseAnonKey,
+      accessToken: params.accessToken,
+      method: "GET",
+      path: "bookings",
+      searchParams: {
+        select: "*",
+        id: `eq.${params.bookingId}`,
+        tenant_id: `eq.${params.user.tenantId}`,
+        limit: "1",
+      },
+      fetchImpl,
+    }),
+    supabaseRestRequest<PaymentRecord[]>({
+      supabaseUrl,
+      supabaseAnonKey,
+      accessToken: params.accessToken,
+      method: "GET",
+      path: "payments",
+      searchParams: {
+        select: "*",
+        booking_id: `eq.${params.bookingId}`,
+        tenant_id: `eq.${params.user.tenantId}`,
+        payment_type: "eq.deposit",
+        status: "eq.pending_validation",
+        limit: "1",
+      },
+      fetchImpl,
+    }),
+  ]);
+
+  const booking = bookingRows[0];
+  if (!booking) {
+    throw new BookingNotFoundError("No se encontró la reserva solicitada.");
+  }
+
+  let draftPayment: PaymentRecord;
+  try {
+    draftPayment = submitDepositReceipt({
+      id: existingPending[0]?.id,
+      booking,
+      receiptMediaUrl: params.receiptMediaUrl,
+      amountCop: params.amountCop,
+      method: params.method,
+      referenceTime: referenceDate,
+    });
+  } catch (error) {
+    mapDomainError(error);
+  }
+
+  if (existingPending[0]) {
+    const updated = await supabaseRestRequest<PaymentRecord[]>({
+      supabaseUrl,
+      supabaseAnonKey,
+      accessToken: params.accessToken,
+      method: "PATCH",
+      path: "payments",
+      searchParams: {
+        id: `eq.${existingPending[0].id}`,
+        tenant_id: `eq.${params.user.tenantId}`,
+      },
+      body: {
+        method: draftPayment.method,
+        amount_cop: draftPayment.amount_cop,
+        cash_amount_cop: draftPayment.cash_amount_cop,
+        transfer_amount_cop: draftPayment.transfer_amount_cop,
+        receipt_media_url: draftPayment.receipt_media_url,
+        updated_at: draftPayment.updated_at,
+      },
+      prefer: "return=representation",
+      fetchImpl,
+    });
+    return updated[0] ?? draftPayment;
+  }
+
+  const created = await supabaseRestRequest<PaymentRecord[]>({
+    supabaseUrl,
+    supabaseAnonKey,
+    accessToken: params.accessToken,
+    method: "POST",
+    path: "payments",
+    body: {
+      id: draftPayment.id,
+      tenant_id: draftPayment.tenant_id,
+      booking_id: draftPayment.booking_id,
+      payment_type: draftPayment.payment_type,
+      method: draftPayment.method,
+      status: draftPayment.status,
+      amount_cop: draftPayment.amount_cop,
+      cash_amount_cop: draftPayment.cash_amount_cop,
+      transfer_amount_cop: draftPayment.transfer_amount_cop,
+      receipt_media_url: draftPayment.receipt_media_url,
+    },
+    prefer: "return=representation",
+    fetchImpl,
+  });
+
+  return created[0] ?? draftPayment;
+}
+
+/**
+ * Approves a pending deposit payment in 1 touch (`CY-038`), transitioning the booking
+ * from `HOLD` to `CONFIRMED` and deducting the deposit from `balance_due_cop`.
+ */
+export async function approvePendingDeposit(params: {
+  user: AuthenticatedTenantUserContext;
+  accessToken: string;
+  paymentId: string;
+  referenceTime?: string | Date;
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
+}): Promise<ApproveDepositPaymentResult> {
+  const fetchImpl = params.fetchImpl ?? fetch;
+  const { supabaseUrl, supabaseAnonKey } = getPublicSupabaseEnv(params.env);
+  const referenceDate =
+    params.referenceTime !== undefined ? new Date(params.referenceTime) : new Date();
+
+  const paymentRows = await supabaseRestRequest<PaymentRecord[]>({
+    supabaseUrl,
+    supabaseAnonKey,
+    accessToken: params.accessToken,
+    method: "GET",
+    path: "payments",
+    searchParams: {
+      select: "*",
+      id: `eq.${params.paymentId}`,
+      tenant_id: `eq.${params.user.tenantId}`,
+      limit: "1",
+    },
+    fetchImpl,
+  });
+
+  const currentPayment = paymentRows[0];
+  if (!currentPayment) {
+    throw new BookingNotFoundError("No se encontró el anticipo por validar.");
+  }
+
+  const bookingRows = await supabaseRestRequest<BookingRecord[]>({
+    supabaseUrl,
+    supabaseAnonKey,
+    accessToken: params.accessToken,
+    method: "GET",
+    path: "bookings",
+    searchParams: {
+      select: "*",
+      id: `eq.${currentPayment.booking_id}`,
+      tenant_id: `eq.${params.user.tenantId}`,
+      limit: "1",
+    },
+    fetchImpl,
+  });
+
+  const currentBooking = bookingRows[0];
+  if (!currentBooking) {
+    throw new BookingNotFoundError("No se encontró la reserva asociada al anticipo.");
+  }
+
+  let approved: ApproveDepositPaymentResult;
+  try {
+    approved = approveDepositPayment({
+      booking: currentBooking,
+      payment: currentPayment,
+      validatedByUserId: params.user.userId,
+      referenceTime: referenceDate,
+    });
+  } catch (error) {
+    mapDomainError(error);
+  }
+
+  const [updatedPayments, updatedBookings] = await Promise.all([
+    supabaseRestRequest<PaymentRecord[]>({
+      supabaseUrl,
+      supabaseAnonKey,
+      accessToken: params.accessToken,
+      method: "PATCH",
+      path: "payments",
+      searchParams: {
+        id: `eq.${currentPayment.id}`,
+        tenant_id: `eq.${params.user.tenantId}`,
+      },
+      body: {
+        status: approved.payment.status,
+        validated_by_user_id: approved.payment.validated_by_user_id,
+        validated_at: approved.payment.validated_at,
+        rejection_reason: null,
+        updated_at: approved.payment.updated_at,
+      },
+      prefer: "return=representation",
+      fetchImpl,
+    }),
+    supabaseRestRequest<BookingRecord[]>({
+      supabaseUrl,
+      supabaseAnonKey,
+      accessToken: params.accessToken,
+      method: "PATCH",
+      path: "bookings",
+      searchParams: {
+        id: `eq.${currentBooking.id}`,
+        tenant_id: `eq.${params.user.tenantId}`,
+      },
+      body: {
+        status: approved.booking.status,
+        hold_expires_at: approved.booking.hold_expires_at,
+        balance_due_cop: approved.booking.balance_due_cop,
+        updated_at: approved.booking.updated_at,
+      },
+      prefer: "return=representation",
+      fetchImpl,
+    }),
+  ]);
+
+  return {
+    payment: updatedPayments[0] ?? approved.payment,
+    booking: updatedBookings[0] ?? approved.booking,
+  };
+}
+
+/**
+ * Rejects a pending deposit payment with a mandatory reason (`CY-038`), expiring the `HOLD`
+ * booking to `CANCELLED` (`HOLD_EXPIRED`) if `hold_expires_at` has already passed.
+ */
+export async function rejectPendingDeposit(params: {
+  user: AuthenticatedTenantUserContext;
+  accessToken: string;
+  paymentId: string;
+  rejectionReason: string;
+  referenceTime?: string | Date;
+  env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
+}): Promise<RejectDepositPaymentResult> {
+  const fetchImpl = params.fetchImpl ?? fetch;
+  const { supabaseUrl, supabaseAnonKey } = getPublicSupabaseEnv(params.env);
+  const referenceDate =
+    params.referenceTime !== undefined ? new Date(params.referenceTime) : new Date();
+
+  const paymentRows = await supabaseRestRequest<PaymentRecord[]>({
+    supabaseUrl,
+    supabaseAnonKey,
+    accessToken: params.accessToken,
+    method: "GET",
+    path: "payments",
+    searchParams: {
+      select: "*",
+      id: `eq.${params.paymentId}`,
+      tenant_id: `eq.${params.user.tenantId}`,
+      limit: "1",
+    },
+    fetchImpl,
+  });
+
+  const currentPayment = paymentRows[0];
+  if (!currentPayment) {
+    throw new BookingNotFoundError("No se encontró el anticipo por validar.");
+  }
+
+  const [bookingRows, allBookingPayments] = await Promise.all([
+    supabaseRestRequest<BookingRecord[]>({
+      supabaseUrl,
+      supabaseAnonKey,
+      accessToken: params.accessToken,
+      method: "GET",
+      path: "bookings",
+      searchParams: {
+        select: "*",
+        id: `eq.${currentPayment.booking_id}`,
+        tenant_id: `eq.${params.user.tenantId}`,
+        limit: "1",
+      },
+      fetchImpl,
+    }),
+    supabaseRestRequest<PaymentRecord[]>({
+      supabaseUrl,
+      supabaseAnonKey,
+      accessToken: params.accessToken,
+      method: "GET",
+      path: "payments",
+      searchParams: {
+        select: "*",
+        booking_id: `eq.${currentPayment.booking_id}`,
+        tenant_id: `eq.${params.user.tenantId}`,
+      },
+      fetchImpl,
+    }),
+  ]);
+
+  const currentBooking = bookingRows[0];
+  if (!currentBooking) {
+    throw new BookingNotFoundError("No se encontró la reserva asociada al anticipo.");
+  }
+
+  let rejected: RejectDepositPaymentResult;
+  try {
+    rejected = rejectDepositPayment({
+      booking: currentBooking,
+      payment: currentPayment,
+      validatedByUserId: params.user.userId,
+      rejectionReason: params.rejectionReason,
+      otherPayments: allBookingPayments.filter((p) => p.id !== currentPayment.id),
+      referenceTime: referenceDate,
+    });
+  } catch (error) {
+    mapDomainError(error);
+  }
+
+  const updatedPayments = await supabaseRestRequest<PaymentRecord[]>({
+    supabaseUrl,
+    supabaseAnonKey,
+    accessToken: params.accessToken,
+    method: "PATCH",
+    path: "payments",
+    searchParams: {
+      id: `eq.${currentPayment.id}`,
+      tenant_id: `eq.${params.user.tenantId}`,
+    },
+    body: {
+      status: rejected.payment.status,
+      validated_by_user_id: rejected.payment.validated_by_user_id,
+      validated_at: rejected.payment.validated_at,
+      rejection_reason: rejected.payment.rejection_reason,
+      updated_at: rejected.payment.updated_at,
+    },
+    prefer: "return=representation",
+    fetchImpl,
+  });
+
+  let finalBooking = rejected.booking;
+  if (rejected.bookingExpired) {
+    const updatedBookings = await supabaseRestRequest<BookingRecord[]>({
+      supabaseUrl,
+      supabaseAnonKey,
+      accessToken: params.accessToken,
+      method: "PATCH",
+      path: "bookings",
+      searchParams: {
+        id: `eq.${currentBooking.id}`,
+        tenant_id: `eq.${params.user.tenantId}`,
+      },
+      body: {
+        status: rejected.booking.status,
+        cancellation_reason: rejected.booking.cancellation_reason,
+        updated_at: rejected.booking.updated_at,
+      },
+      prefer: "return=representation",
+      fetchImpl,
+    });
+    finalBooking = updatedBookings[0] ?? rejected.booking;
+  }
+
+  return {
+    booking: finalBooking,
+    payment: updatedPayments[0] ?? rejected.payment,
+    bookingExpired: rejected.bookingExpired,
+  };
 }

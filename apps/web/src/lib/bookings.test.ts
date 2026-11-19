@@ -4,11 +4,15 @@ import {
   BookingConflictError,
   BookingNotFoundError,
   BookingValidationError,
+  approvePendingDeposit,
   cancelManualBooking,
   createManualHoldBooking,
   createTenantCustomer,
+  listPendingDepositValidations,
   moveManualBooking,
   normalizePhoneInput,
+  registerManualDepositReceipt,
+  rejectPendingDeposit,
   searchTenantCustomers,
 } from "./bookings";
 
@@ -343,5 +347,221 @@ describe("apps/web manual booking operations (CY-037)", () => {
         fetchImpl: fetchMock as unknown as typeof fetch,
       }),
     ).rejects.toBeInstanceOf(BookingNotFoundError);
+  });
+});
+
+describe("apps/web deposit validation queue (CY-038)", () => {
+  const holdBooking: BookingRecord = {
+    id: "booking-hold-deposit-1",
+    tenant_id: "tenant-1",
+    court_id: "court-1",
+    customer_id: "cust-1",
+    status: "HOLD",
+    starts_at: "2026-11-13T00:00:00.000Z", // 19:00 America/Bogota on 2026-11-12
+    ends_at: "2026-11-13T01:00:00.000Z", // 20:00 America/Bogota
+    hold_expires_at: "2026-11-12T18:15:00.000Z",
+    total_price_cop: 60000,
+    deposit_required_cop: 12000,
+    balance_due_cop: 60000,
+    rescheduled_from_booking_id: null,
+    created_by_user_id: "user-staff-1",
+    cancellation_reason: null,
+    notes: null,
+    created_at: "2026-11-12T18:00:00.000Z",
+    updated_at: "2026-11-12T18:00:00.000Z",
+  };
+
+  const pendingPayment: PaymentRecord = {
+    id: "pay-pending-1",
+    tenant_id: "tenant-1",
+    booking_id: "booking-hold-deposit-1",
+    payment_type: "deposit",
+    method: "transfer",
+    status: "pending_validation",
+    amount_cop: 12000,
+    cash_amount_cop: 0,
+    transfer_amount_cop: 12000,
+    receipt_media_url: "https://cdn.example.com/comprobantes/nequi-12000.jpg",
+    validated_by_user_id: null,
+    validated_at: null,
+    rejection_reason: null,
+    created_at: "2026-11-12T18:02:00.000Z",
+    updated_at: "2026-11-12T18:02:00.000Z",
+  };
+
+  it("lists pending deposits across all dates formatted in America/Bogota", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+
+      if (url.includes("/rest/v1/tenants")) {
+        return new Response(JSON.stringify([{ id: "tenant-1", timezone: "America/Bogota" }]), {
+          status: 200,
+        });
+      }
+      if (url.includes("/rest/v1/payments")) {
+        expect(url).toContain("payment_type=eq.deposit");
+        expect(url).toContain("status=eq.pending_validation");
+        return new Response(
+          JSON.stringify([
+            {
+              ...pendingPayment,
+              booking: {
+                ...holdBooking,
+                court: { id: "court-1", name: "Cancha Pádel 1", sport: { code: "padel" } },
+                customer: {
+                  id: "cust-1",
+                  full_name: "Mateo Rojas",
+                  phone: "+573110001122",
+                },
+              },
+            },
+          ]),
+          { status: 200 },
+        );
+      }
+
+      return new Response("Not found", { status: 404 });
+    });
+
+    const queue = await listPendingDepositValidations({
+      user: USER,
+      accessToken: "token",
+      env: ENV,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    expect(queue).toHaveLength(1);
+    expect(queue[0]?.paymentId).toBe("pay-pending-1");
+    expect(queue[0]?.customerName).toBe("Mateo Rojas");
+    expect(queue[0]?.courtName).toBe("Cancha Pádel 1");
+    expect(queue[0]?.localDate).toBe("2026-11-12");
+    expect(queue[0]?.localStartTime).toBe("19:00");
+    expect(queue[0]?.localEndTime).toBe("20:00");
+    expect(queue[0]?.amountCop).toBe(12000);
+    expect(queue[0]?.receiptMediaUrl).toBe("https://cdn.example.com/comprobantes/nequi-12000.jpg");
+  });
+
+  it("registers a manual deposit receipt on a HOLD booking and approves it in 1 touch", async () => {
+    let createdPayment = false;
+    let patchedPayment = false;
+    let patchedBooking = false;
+
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+
+      if (url.includes("/rest/v1/bookings") && method === "GET") {
+        return new Response(JSON.stringify([holdBooking]), { status: 200 });
+      }
+      if (url.includes("/rest/v1/payments") && method === "GET") {
+        if (url.includes("id=eq.pay-pending-1")) {
+          return new Response(JSON.stringify([pendingPayment]), { status: 200 });
+        }
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes("/rest/v1/payments") && method === "POST") {
+        createdPayment = true;
+        const body = JSON.parse(String(init?.body)) as PaymentRecord;
+        return new Response(JSON.stringify([body]), { status: 201 });
+      }
+      if (url.includes("/rest/v1/payments") && method === "PATCH") {
+        patchedPayment = true;
+        const body = JSON.parse(String(init?.body)) as Partial<PaymentRecord>;
+        return new Response(JSON.stringify([{ ...pendingPayment, ...body }]), { status: 200 });
+      }
+      if (url.includes("/rest/v1/bookings") && method === "PATCH") {
+        patchedBooking = true;
+        const body = JSON.parse(String(init?.body)) as Partial<BookingRecord>;
+        return new Response(JSON.stringify([{ ...holdBooking, ...body }]), { status: 200 });
+      }
+
+      return new Response("Not found", { status: 404 });
+    });
+
+    const submitted = await registerManualDepositReceipt({
+      user: USER,
+      accessToken: "token",
+      bookingId: holdBooking.id,
+      receiptMediaUrl: "https://cdn.example.com/comprobantes/nequi-12000.jpg",
+      referenceTime: "2026-11-12T18:02:00.000Z",
+      env: ENV,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    expect(createdPayment).toBe(true);
+    expect(submitted.status).toBe("pending_validation");
+    expect(submitted.amount_cop).toBe(12000);
+
+    const approved = await approvePendingDeposit({
+      user: USER,
+      accessToken: "token",
+      paymentId: "pay-pending-1",
+      referenceTime: "2026-11-12T18:05:00.000Z",
+      env: ENV,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    expect(patchedPayment).toBe(true);
+    expect(patchedBooking).toBe(true);
+    expect(approved.payment.status).toBe("approved");
+    expect(approved.payment.validated_by_user_id).toBe("user-staff-1");
+    expect(approved.booking.status).toBe("CONFIRMED");
+    expect(approved.booking.balance_due_cop).toBe(48000);
+    expect(approved.booking.hold_expires_at).toBeNull();
+  });
+
+  it("rejects a pending deposit with a mandatory reason and cancels the booking if HOLD already expired", async () => {
+    let patchedBookingToCancelled = false;
+
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+
+      if (url.includes("/rest/v1/payments") && method === "GET") {
+        return new Response(JSON.stringify([pendingPayment]), { status: 200 });
+      }
+      if (url.includes("/rest/v1/bookings") && method === "GET") {
+        return new Response(JSON.stringify([holdBooking]), { status: 200 });
+      }
+      if (url.includes("/rest/v1/payments") && method === "PATCH") {
+        const body = JSON.parse(String(init?.body)) as Partial<PaymentRecord>;
+        return new Response(JSON.stringify([{ ...pendingPayment, ...body }]), { status: 200 });
+      }
+      if (url.includes("/rest/v1/bookings") && method === "PATCH") {
+        patchedBookingToCancelled = true;
+        const body = JSON.parse(String(init?.body)) as Partial<BookingRecord>;
+        return new Response(JSON.stringify([{ ...holdBooking, ...body }]), { status: 200 });
+      }
+
+      return new Response("Not found", { status: 404 });
+    });
+
+    await expect(
+      rejectPendingDeposit({
+        user: USER,
+        accessToken: "token",
+        paymentId: "pay-pending-1",
+        rejectionReason: "   ",
+        referenceTime: "2026-11-12T18:05:00.000Z",
+        env: ENV,
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      }),
+    ).rejects.toBeInstanceOf(BookingValidationError);
+
+    const rejectedAfterExpiry = await rejectPendingDeposit({
+      user: USER,
+      accessToken: "token",
+      paymentId: "pay-pending-1",
+      rejectionReason: "Monto incompleto",
+      referenceTime: "2026-11-12T18:20:00.000Z",
+      env: ENV,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    expect(rejectedAfterExpiry.payment.status).toBe("rejected");
+    expect(rejectedAfterExpiry.payment.rejection_reason).toBe("Monto incompleto");
+    expect(rejectedAfterExpiry.bookingExpired).toBe(true);
+    expect(rejectedAfterExpiry.booking.status).toBe("CANCELLED");
+    expect(patchedBookingToCancelled).toBe(true);
   });
 });
