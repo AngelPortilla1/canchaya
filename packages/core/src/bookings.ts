@@ -22,9 +22,11 @@ import {
 import {
   assertNoBookingOverlap,
   type BookingRecord,
+  type PaymentMethod,
   type PaymentRecord,
   type PaymentStatus,
   type PaymentType,
+  validatePaymentBreakdownCop,
 } from "./schema";
 
 export const HOLD_EXPIRED_CANCELLATION_REASON = "HOLD_EXPIRED" as const;
@@ -768,4 +770,275 @@ export function cancelBooking(input: CancelBookingInput): BookingRecord {
     cancellationReason: input.cancellationReason,
     referenceTime: input.referenceTime,
   });
+}
+
+export const QUICK_DEPOSIT_REJECTION_REASONS = [
+  "Monto incompleto",
+  "Imagen borrosa / no abre",
+  "Comprobante no válido",
+] as const;
+
+export type DepositValidationErrorCode =
+  | "BOOKING_MISMATCH"
+  | "INVALID_PAYMENT_TYPE"
+  | "PAYMENT_NOT_PENDING"
+  | "VALIDATOR_USER_REQUIRED"
+  | "REJECTION_REASON_REQUIRED"
+  | "RECEIPT_URL_REQUIRED"
+  | "INVALID_DEPOSIT_AMOUNT";
+
+export class DepositValidationError extends Error {
+  readonly code: DepositValidationErrorCode;
+
+  constructor(code: DepositValidationErrorCode, message: string) {
+    super(message);
+    this.name = "DepositValidationError";
+    this.code = code;
+  }
+}
+
+export interface SubmitDepositReceiptInput {
+  id?: string;
+  booking: BookingRecord;
+  receiptMediaUrl: string;
+  amountCop?: number;
+  method?: Extract<PaymentMethod, "transfer" | "cash">;
+  referenceTime?: string | Date;
+}
+
+/**
+ * Registers a deposit payment with a receipt (`status = 'pending_validation'`) for a `HOLD` booking,
+ * protecting the booking from automatic `HOLD` expiration while awaiting staff review (`RF-08`, `CY-038`).
+ */
+export function submitDepositReceipt(input: SubmitDepositReceiptInput): PaymentRecord {
+  const { booking, receiptMediaUrl, method = "transfer", referenceTime } = input;
+
+  if (booking.status !== "HOLD") {
+    throw new InvalidBookingTransitionError(
+      booking.status,
+      "HOLD",
+      "deposit receipt can only be submitted for a HOLD booking",
+    );
+  }
+
+  const trimmedUrl = (receiptMediaUrl ?? "").trim();
+  if (trimmedUrl.length === 0) {
+    throw new DepositValidationError("RECEIPT_URL_REQUIRED", "receiptMediaUrl is required");
+  }
+
+  const amountCop = input.amountCop ?? booking.deposit_required_cop;
+  if (!Number.isInteger(amountCop) || amountCop <= 0 || amountCop > booking.total_price_cop) {
+    throw new DepositValidationError(
+      "INVALID_DEPOSIT_AMOUNT",
+      "amountCop must be a positive integer in COP not exceeding total_price_cop",
+    );
+  }
+
+  const cashAmountCop = method === "cash" ? amountCop : 0;
+  const transferAmountCop = method === "transfer" ? amountCop : 0;
+
+  if (
+    !validatePaymentBreakdownCop({
+      method,
+      amountCop,
+      cashAmountCop,
+      transferAmountCop,
+    })
+  ) {
+    throw new DepositValidationError(
+      "INVALID_DEPOSIT_AMOUNT",
+      "Invalid deposit payment breakdown in COP",
+    );
+  }
+
+  const referenceDate = resolveReferenceDate(referenceTime);
+  const nowIso = referenceDate.toISOString();
+  const paymentId = input.id && input.id.trim().length > 0 ? input.id.trim() : crypto.randomUUID();
+
+  return {
+    id: paymentId,
+    tenant_id: booking.tenant_id,
+    booking_id: booking.id,
+    payment_type: "deposit",
+    method,
+    status: "pending_validation",
+    amount_cop: amountCop,
+    cash_amount_cop: cashAmountCop,
+    transfer_amount_cop: transferAmountCop,
+    receipt_media_url: trimmedUrl,
+    validated_by_user_id: null,
+    validated_at: null,
+    rejection_reason: null,
+    created_at: nowIso,
+    updated_at: nowIso,
+  };
+}
+
+export interface ApproveDepositPaymentInput {
+  booking: BookingRecord;
+  payment: PaymentRecord;
+  validatedByUserId: string;
+  referenceTime?: string | Date;
+}
+
+export interface ApproveDepositPaymentResult {
+  booking: BookingRecord;
+  payment: PaymentRecord;
+}
+
+function assertPendingDepositForBooking(
+  booking: BookingRecord,
+  payment: PaymentRecord,
+  validatedByUserId: string,
+): string {
+  if (payment.tenant_id !== booking.tenant_id || payment.booking_id !== booking.id) {
+    throw new DepositValidationError(
+      "BOOKING_MISMATCH",
+      "Payment does not belong to the target booking and tenant",
+    );
+  }
+  if (payment.payment_type !== "deposit") {
+    throw new DepositValidationError(
+      "INVALID_PAYMENT_TYPE",
+      "Only deposit payments can be validated in the deposit queue",
+    );
+  }
+  if (payment.status !== "pending_validation") {
+    throw new DepositValidationError(
+      "PAYMENT_NOT_PENDING",
+      `Deposit payment is already in status ${payment.status}`,
+    );
+  }
+  const validatorId = (validatedByUserId ?? "").trim();
+  if (validatorId.length === 0) {
+    throw new DepositValidationError(
+      "VALIDATOR_USER_REQUIRED",
+      "validatedByUserId is required to validate a deposit",
+    );
+  }
+  return validatorId;
+}
+
+/**
+ * Approves a pending deposit payment in 1 touch (`CY-038`, `RF-08`):
+ * 1. Marks the payment as `approved` with `validated_by_user_id` and `validated_at`.
+ * 2. Transitions the booking from `HOLD` to `CONFIRMED` (`hold_expires_at = null`)
+ *    and updates `balance_due_cop = Math.max(0, total_price_cop - payment.amount_cop)`.
+ */
+export function approveDepositPayment(
+  input: ApproveDepositPaymentInput,
+): ApproveDepositPaymentResult {
+  const { booking, payment, validatedByUserId, referenceTime } = input;
+  const validatorId = assertPendingDepositForBooking(booking, payment, validatedByUserId);
+  const referenceDate = resolveReferenceDate(referenceTime);
+  const nowIso = referenceDate.toISOString();
+
+  const confirmedBooking = transitionBooking(booking, "CONFIRMED", {
+    referenceTime: referenceDate,
+  });
+
+  const updatedBooking: BookingRecord = {
+    ...confirmedBooking,
+    hold_expires_at: null,
+    balance_due_cop: Math.max(0, booking.total_price_cop - payment.amount_cop),
+    updated_at: nowIso,
+  };
+
+  const updatedPayment: PaymentRecord = {
+    ...payment,
+    status: "approved",
+    validated_by_user_id: validatorId,
+    validated_at: nowIso,
+    rejection_reason: null,
+    updated_at: nowIso,
+  };
+
+  return {
+    booking: updatedBooking,
+    payment: updatedPayment,
+  };
+}
+
+export interface RejectDepositPaymentInput {
+  booking: BookingRecord;
+  payment: PaymentRecord;
+  validatedByUserId: string;
+  rejectionReason: string;
+  /**
+   * Optional additional payment records for the booking to check if another active deposit exists.
+   */
+  otherPayments?: readonly DepositPaymentCandidate[];
+  referenceTime?: string | Date;
+}
+
+export interface RejectDepositPaymentResult {
+  booking: BookingRecord;
+  payment: PaymentRecord;
+  bookingExpired: boolean;
+}
+
+/**
+ * Rejects a pending deposit payment with a mandatory reason (`CY-038`, `RF-08`):
+ * 1. Marks the payment as `rejected` with `rejection_reason`, `validated_by_user_id`, and `validated_at`.
+ * 2. If the `HOLD` booking has already passed `hold_expires_at` and has no other active deposit,
+ *    automatically transitions the booking to `CANCELLED` (`HOLD_EXPIRED`) to release the court slot.
+ *    Otherwise keeps the booking in `HOLD` so the customer can send a new receipt before it expires.
+ */
+export function rejectDepositPayment(input: RejectDepositPaymentInput): RejectDepositPaymentResult {
+  const {
+    booking,
+    payment,
+    validatedByUserId,
+    rejectionReason,
+    otherPayments = [],
+    referenceTime,
+  } = input;
+
+  const validatorId = assertPendingDepositForBooking(booking, payment, validatedByUserId);
+  const trimmedReason = (rejectionReason ?? "").trim();
+  if (trimmedReason.length === 0) {
+    throw new DepositValidationError(
+      "REJECTION_REASON_REQUIRED",
+      "rejectionReason is required when rejecting a deposit receipt",
+    );
+  }
+
+  const referenceDate = resolveReferenceDate(referenceTime);
+  const nowIso = referenceDate.toISOString();
+
+  const updatedPayment: PaymentRecord = {
+    ...payment,
+    status: "rejected",
+    validated_by_user_id: validatorId,
+    validated_at: nowIso,
+    rejection_reason: trimmedReason,
+    updated_at: nowIso,
+  };
+
+  const remainingPayments = otherPayments.filter((candidate) => candidate !== payment);
+  const shouldExpireHold =
+    booking.status === "HOLD" &&
+    isHoldBookingExpired(booking, referenceDate) &&
+    !hasActiveDepositPayment(booking, remainingPayments);
+
+  if (shouldExpireHold) {
+    const expiredBooking = transitionBooking(booking, "CANCELLED", {
+      referenceTime: referenceDate,
+      cancellationReason: HOLD_EXPIRED_CANCELLATION_REASON,
+    });
+    return {
+      booking: {
+        ...expiredBooking,
+        updated_at: nowIso,
+      },
+      payment: updatedPayment,
+      bookingExpired: true,
+    };
+  }
+
+  return {
+    booking,
+    payment: updatedPayment,
+    bookingExpired: false,
+  };
 }
